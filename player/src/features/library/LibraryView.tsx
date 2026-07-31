@@ -50,12 +50,11 @@ function artistCoverUrl(artist: SubsonicArtist, getCoverUrl: (id: string | undef
 
 // ── Bento featured section: large card + 2×2 grid ──
 function FeaturedSection<T extends { id: string }>({
-  items, renderFeatured, renderCompact, columns = 5,
+  items, renderFeatured, renderCompact,
 }: {
   items: T[];
   renderFeatured: (item: T) => React.ReactNode;
   renderCompact: (item: T) => React.ReactNode;
-  columns?: number;
 }) {
   if (items.length === 0) return null;
   const featured = items[0];
@@ -222,6 +221,7 @@ export default function LibraryView() {
     } else if (playlistId) {
       segs.push({ label: 'Playlists', link: '/library/playlists' });
       if (detailPlaylist) segs.push({ label: detailPlaylist.name });
+    }
     return segs;
   }
 
@@ -264,7 +264,7 @@ export default function LibraryView() {
                 <p className="text-sm" style={{ color: '#CBC3D7' }}>
                   {album.artistId ? (
                     <button
-                      onClick={() => navigate(`/library/artists/${slugify(album.artist)}/${album.artistId}`)}
+                      onClick={() => navigate(`/library/artists/${slugify(album.artist ?? '')}/${album.artistId ?? ''}`)}
                       className="bg-transparent border-none p-0 cursor-pointer hover:underline hover:opacity-80"
                       style={{ color: '#D0BCFF' }}>
                       {album.artist}
@@ -393,7 +393,7 @@ export default function LibraryView() {
                 return (
                 <div className="flex-1 min-w-0 rounded-xl px-3 py-3 flex items-center gap-2 cursor-pointer hover:bg-white/[0.06] transition-colors"
                   style={CARD}
-                  onClick={() => navigate(`/library/albums/${slugify(latest.name)}/${latest.id}`)}>
+                  onClick={() => navigate(`/library/albums/${slugify(latest.name)}/${latest.id ?? ''}`)}>
                   <CachedCover url={getCoverUrl(latest.coverArt)} alt=""
                     className="w-10 h-10 rounded-md object-cover flex-shrink-0" />
                   <div className="min-w-0">
@@ -411,7 +411,7 @@ export default function LibraryView() {
 
         {/* Popular tracks — top 5 */}
         {artistAlbums.length > 0 && (() => {
-          const topSongs = artistAlbums.flatMap(a => a.song ?? []).slice(0, 5);
+          const topSongs = artistAlbums.flatMap(a => (a as any).song ?? []).slice(0, 5);
           if (topSongs.length === 0) return null;
           return (
             <div className="rounded-2xl overflow-hidden mb-8" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.04)' }}>
@@ -741,5 +741,4 @@ function PlaylistDescription({ text }: { text: string }) {
       </button>
     </div>
   );
-}
 }

@@ -17,7 +17,7 @@ export default function SearchView() {
   const navigate = useNavigate();
 
   const [query, setQuery] = useState('');
-  const searchTimeout = useRef<ReturnType<typeof setTimeout>>();
+  const searchTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const handleSearch = useCallback((q: string) => {
     setQuery(q);

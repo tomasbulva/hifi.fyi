@@ -147,12 +147,12 @@ export default function SettingsView() {
                 <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>Automatically suggest next song when queue ends</p>
               </div>
               <button
-                onClick={() => setAutoplay(!autoplay)}
+                onClick={() => updateSettings({ autoplay: !settings.autoplay })}
                 className="w-12 h-6 rounded-full border-none cursor-pointer transition-colors"
-                style={{ background: autoplay ? 'var(--color-primary)' : 'rgba(255,255,255,0.1)' }}
+                style={{ background: settings.autoplay ? 'var(--color-primary)' : 'rgba(255,255,255,0.1)' }}
               >
                 <div className="w-5 h-5 rounded-full bg-white transition-transform"
-                  style={{ transform: autoplay ? 'translateX(24px)' : 'translateX(2px)' }} />
+                  style={{ transform: settings.autoplay ? 'translateX(24px)' : 'translateX(2px)' }} />
               </button>
             </div>
           </div>

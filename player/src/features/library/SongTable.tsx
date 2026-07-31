@@ -22,7 +22,7 @@ interface SongTableProps {
 const DEFAULT_COLUMNS: Column[] = ['#', 'title', 'artist', 'quality', 'duration'];
 
 export function SongTable({
-  songs, play, addToQueue, replaceQueue, getCoverUrl,
+  songs, play, addToQueue, getCoverUrl,
   columns = DEFAULT_COLUMNS,
   currentTrackId,
   showSelection = false,
@@ -76,13 +76,6 @@ export function SongTable({
     favorite: '',
   };
 
-  // ponytail: column width classes
-  const colWidth: Record<string, string> = {
-    '#': 'w-8', title: 'flex-1 min-w-0', artist: 'w-40 hidden md:table-cell',
-    album: 'w-44 hidden md:table-cell', quality: 'w-24 hidden lg:table-cell',
-    added: 'w-32 hidden lg:table-cell', duration: 'w-16 text-right',
-    checkbox: 'w-8', favorite: 'w-8',
-  };
 
   return (
     <div>
