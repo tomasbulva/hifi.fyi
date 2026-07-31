@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useCompanion } from '../../core/CompanionContext';
 import type { SubsonicSong } from '../../core/types';
-import { Label } from './components';
 import { CachedCover } from '../../components/CachedCover';
+import { getPlaylistCoverUrl } from '../../core/companionClient';
 
 export interface SmartPlaylistCard {
   id: string;
@@ -38,16 +38,16 @@ export function SmartPlaylistsGrid({ onSelect, onDirectPlay: _onDirectPlay }: Sm
       {SMART_PLAYLISTS.map(card => (
         <div
           key={card.id}
-          className="group glass-panel rounded-xl p-4 cursor-pointer hover:scale-[1.02] transition-transform"
+          className="group rounded-xl overflow-hidden cursor-pointer hover:scale-[1.02] transition-transform"
           onClick={() => onSelect(card)}
         >
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-primary-container/20 flex items-center justify-center flex-shrink-0">
-              <span className="material-symbols-outlined text-primary text-xl">{card.icon}</span>
-            </div>
-            <div className="min-w-0 flex-1">
-              <Label>{card.title}</Label>
-              <p className="text-xs text-on-surface-variant truncate">{card.subtitle}</p>
+          <div className="relative aspect-square">
+            <img src={getPlaylistCoverUrl(card.id)} alt={card.title} className="w-full h-full object-cover" />
+            <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
+            <div className="absolute bottom-0 left-0 right-0 p-3">
+              <span className="material-symbols-outlined text-2xl mb-1" style={{ color: '#D0BCFF' }}>{card.icon}</span>
+              <h3 className="text-sm font-bold" style={{ color: '#E5E2E1' }}>{card.title}</h3>
+              <p className="text-xs truncate" style={{ color: '#CBC3D7' }}>{card.subtitle}</p>
             </div>
           </div>
         </div>

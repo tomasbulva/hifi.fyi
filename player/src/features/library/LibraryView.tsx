@@ -11,6 +11,7 @@ import { CachedCover } from '../../components/CachedCover';
 import { useToast } from '../../components/Toast';
 import { formatTime, slugify } from '../../core/format';
 import { LOSSLESS_FORMATS } from '../../core/quality';
+import { getDailyMixes, getPlaylistCoverUrl } from '../../core/companionClient';
 
 type LibTab = 'albums' | 'artists' | 'playlists' | 'songs';
 
@@ -111,7 +112,6 @@ export default function LibraryView() {
     albumsByType, loadAlbumList, albumsHasMore, loadMoreAlbums,
     playlists, loadPlaylists,
     allSongs, loadAllSongs, songsHasMore, loadMoreSongs,
-    search, searchResults,
   } = useMusic();
   const navigate = useNavigate();
   const toast = useToast();
@@ -125,7 +125,15 @@ export default function LibraryView() {
   const tab: LibTab = params.tab && VALID_TABS.includes(params.tab as LibTab) ? (params.tab as LibTab) : 'albums';
 
   const [filter, setFilter] = useState('all');
-  const [query, setQuery] = useState('');
+  const [dailyMixes, setDailyMixes] = useState<any[]>([]);
+
+  // Load daily mixes when on playlists tab (no detail view)
+  useEffect(() => {
+    if (tab !== 'playlists' || albumId || artistId || playlistId) return;
+    getDailyMixes().then(mixes => {
+      setDailyMixes(mixes);
+    });
+  }, [tab, albumId, artistId, playlistId]);
 
   // ── Infinite scroll sentry ──
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -202,14 +210,6 @@ export default function LibraryView() {
     navigate(`/library/${newTab}`);
   }, [navigate]);
 
-  const searchTimeout = useRef<ReturnType<typeof setTimeout>>();
-  const handleSearch = useCallback((q: string) => {
-    setQuery(q);
-    clearTimeout(searchTimeout.current);
-    searchTimeout.current = setTimeout(() => search(q), 300);
-  }, [search]);
-  const clearSearch = useCallback(() => { setQuery(''); search(''); }, [search]);
-
   // ── Build breadcrumbs ──
   function crumbs(): { label: string; link?: string }[] {
     const segs: { label: string; link?: string }[] = [{ label: 'Library', link: '/library/albums' }];
@@ -222,9 +222,6 @@ export default function LibraryView() {
     } else if (playlistId) {
       segs.push({ label: 'Playlists', link: '/library/playlists' });
       if (detailPlaylist) segs.push({ label: detailPlaylist.name });
-    } else if (searchResults) {
-      segs.push({ label: 'Search' });
-    }
     return segs;
   }
 
@@ -552,66 +549,6 @@ export default function LibraryView() {
       </Centered>
     );
   }
-
-  // ══════════════════════════════════════════
-  // SEARCH RESULTS
-  // ══════════════════════════════════════════
-  if (searchResults) {
-    const sr = searchResults;
-    return (
-      <Centered>
-        <Breadcrumb segments={crumbs()} onNavigate={navigateCrumb} />
-        <div className="relative mb-6">
-          <span className="absolute left-4 top-1/2 -translate-y-1/2 material-symbols-outlined text-xl" style={{ color: '#CBC3D7' }}>search</span>
-          <input type="text" value={query}
-            onChange={e => handleSearch(e.target.value)}
-            placeholder="Search..."
-            className="w-full pl-12 pr-10 py-3 rounded-xl border-none outline-none text-sm"
-            style={{ background: 'rgba(255,255,255,0.04)', color: '#E5E2E1' }} />
-          {query && (
-            <button onClick={clearSearch} className="absolute right-3 top-1/2 -translate-y-1/2 bg-transparent border-none cursor-pointer hover:opacity-80 p-2">
-              <span className="material-symbols-outlined text-lg" style={{ color: '#CBC3D7' }}>close</span>
-            </button>
-          )}
-        </div>
-        {sr.artist?.length > 0 && (
-          <section className="mb-8">
-            <h2 className="text-sm font-bold mb-3" style={{ color: '#E5E2E1' }}>Artists</h2>
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-              {sr.artist.map((a: SubsonicArtist) => (
-                <div key={a.id} className="flex flex-col items-center cursor-pointer hover:opacity-80"
-                  onClick={() => { navigate(`/library/artists/${slugify(a.name)}/${a.id}`); setQuery(''); }}>
-                  <CachedCover url={artistCoverUrl(a, getCoverUrl)} alt={a.name}
-                    className="w-24 h-24 rounded-full object-cover mb-2" />
-                  <span className="text-sm font-medium truncate w-full text-center" style={{ color: '#E5E2E1' }}>{a.name}</span>
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
-        {sr.album?.length > 0 && (
-          <section className="mb-8">
-            <h2 className="text-sm font-bold mb-3" style={{ color: '#E5E2E1' }}>Albums</h2>
-            <AlbumGrid albums={sr.album}
-              selectAlbum={(a: SubsonicAlbum) => { navigate(`/library/albums/${slugify(a.name)}/${a.id}`); setQuery(''); }}
-              getCoverUrl={getCoverUrl} />
-          </section>
-        )}
-        {sr.song?.length > 0 && (
-          <section>
-            <h2 className="text-sm font-bold mb-3" style={{ color: '#E5E2E1' }}>Songs</h2>
-            <SongTable songs={sr.song} play={(s: SubsonicSong) => { play(s); setQuery(''); }}
-              addToQueue={addToQueue} replaceQueue={replaceQueue} getCoverUrl={getCoverUrl}
-              currentTrackId={currentTrack?.id} columns={['#', 'title', 'artist', 'quality', 'duration']} />
-          </section>
-        )}
-        {!sr.artist?.length && !sr.album?.length && !sr.song?.length && (
-          <Empty>No results</Empty>
-        )}
-      </Centered>
-    );
-  }
-
   // ══════════════════════════════════════════
   // MAIN LIBRARY TABS
   // ══════════════════════════════════════════
@@ -622,22 +559,9 @@ export default function LibraryView() {
           {HEADER_LABELS[tab]}
         </h1>
         <div className="flex items-center gap-3">
-          {query ? (
-            <input type="text" value={query} onChange={e => handleSearch(e.target.value)}
-              placeholder="Search..." autoFocus
-              className="w-48 pl-3 pr-8 py-1.5 rounded-full border-none outline-none text-sm"
-              style={{ background: 'rgba(255,255,255,0.06)', color: '#E5E2E1' }}
-              onKeyDown={e => { if (e.key === 'Escape') clearSearch(); }} />
-          ) : (
-            <button onClick={() => setQuery(' ')} className="bg-transparent border-none cursor-pointer hover:opacity-80 p-1">
-              <span className="material-symbols-outlined text-2xl" style={{ color: '#CBC3D7' }}>search</span>
-            </button>
-          )}
-          {query && (
-            <button onClick={clearSearch} className="bg-transparent border-none cursor-pointer hover:opacity-80 p-0" style={{ color: '#CBC3D7' }}>
-              <span className="material-symbols-outlined text-lg">close</span>
-            </button>
-          )}
+          <button onClick={() => navigate('/search')} className="bg-transparent border-none cursor-pointer hover:opacity-80 p-1">
+            <span className="material-symbols-outlined text-2xl" style={{ color: '#CBC3D7' }}>search</span>
+          </button>
         </div>
       </div>
       <LibraryTabs tabs={TABS} active={tab} onChange={setTab} filter={filter} onFilter={setFilter} />
@@ -722,6 +646,27 @@ export default function LibraryView() {
       })()}
 
       {tab === 'playlists' && (() => (
+        <>
+        {dailyMixes.length > 0 && (
+          <div className="mb-8">
+            <h3 className="mb-3 text-[10px] font-bold uppercase tracking-widest" style={{ color: '#CBC3D7' }}>Daily Mixes</h3>
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 stagger-children">
+              {dailyMixes.map(mix => (
+                <div key={mix.id} className="group cursor-pointer rounded-lg p-2 transition-all hover:bg-white/[0.03]"
+                  onClick={() => navigate(`/library/playlists/daily-${mix.id}/${mix.id}`)}>
+                  <div className="relative overflow-hidden rounded-lg mb-2 aspect-square">
+                    <img src={getPlaylistCoverUrl(mix.id)} alt={mix.title} className="w-full h-full object-cover transition-transform group-hover:scale-105" />
+                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                      <span className="material-symbols-outlined text-3xl" style={{ color: '#E5E2E1', fontVariationSettings: "'FILL' 1" }}>play_arrow</span>
+                    </div>
+                  </div>
+                  <h3 className="text-sm font-semibold truncate" style={{ color: '#E5E2E1' }}>{mix.title}</h3>
+                  <p className="text-xs mt-0.5 truncate" style={{ color: '#CBC3D7' }}>{mix.subtitle}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         <FeaturedSection items={playlists}
           renderFeatured={pl => (
             <div className="group relative rounded-2xl overflow-hidden cursor-pointer"
@@ -757,6 +702,7 @@ export default function LibraryView() {
             </div>
           )}
         />
+        </>
       ))()}
 
       {tab === 'songs' && (() => {
@@ -795,4 +741,5 @@ function PlaylistDescription({ text }: { text: string }) {
       </button>
     </div>
   );
+}
 }

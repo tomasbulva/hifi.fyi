@@ -140,6 +140,22 @@ export default function SettingsView() {
               </button>
             </label>
           </div>
+          <div className="mt-4 pt-4" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+            <div className="flex items-center justify-between py-3">
+              <div>
+                <span className="text-sm font-semibold" style={{ color: 'var(--color-text)' }}>Keep Playing</span>
+                <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>Automatically suggest next song when queue ends</p>
+              </div>
+              <button
+                onClick={() => setAutoplay(!autoplay)}
+                className="w-12 h-6 rounded-full border-none cursor-pointer transition-colors"
+                style={{ background: autoplay ? 'var(--color-primary)' : 'rgba(255,255,255,0.1)' }}
+              >
+                <div className="w-5 h-5 rounded-full bg-white transition-transform"
+                  style={{ transform: autoplay ? 'translateX(24px)' : 'translateX(2px)' }} />
+              </button>
+            </div>
+          </div>
         </section>
 
         {/* Smart Features section */}

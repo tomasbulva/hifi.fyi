@@ -4,22 +4,13 @@ import { useState, useEffect } from 'react';
 import CastButton from '../cast/CastButton';
 import { useCast } from '../../core/CastContext';
 import { CachedCover } from '../../components/CachedCover';
+import { PlayingBars } from '../../components/shared';
+import { DraggableProgressBar } from './DraggableProgressBar';
+import { AlbumBackdrop } from '../../components/AlbumBackdrop';
 import QualityBadge, { SongQualityBadge } from './QualityBadge';
 import VisualizationView, { type VizMode } from '../visualization/VisualizationView';
 import { formatTime } from '../../core/format';
 import type { SongRating } from '../../core/companionClient';
-
-function PlayingBars({ animated }: { animated: boolean }) {
-  return (
-    <div className={`flex items-end gap-[1px] h-3 ${animated ? '' : 'opacity-40'}`}>
-      <div className="w-0.5 rounded-full" style={{ height: '40%', background: '#D0BCFF', animation: animated ? 'eq1 0.8s ease-in-out infinite' : 'none' }} />
-      <div className="w-0.5 rounded-full" style={{ height: '80%', background: '#D0BCFF', animation: animated ? 'eq2 0.6s ease-in-out infinite' : 'none' }} />
-      <div className="w-0.5 rounded-full" style={{ height: '60%', background: '#D0BCFF', animation: animated ? 'eq3 0.7s ease-in-out infinite' : 'none' }} />
-      <div className="w-0.5 rounded-full" style={{ height: '90%', background: '#D0BCFF', animation: animated ? 'eq4 0.5s ease-in-out infinite' : 'none' }} />
-    </div>
-  );
-}
-
 function StarRating({ rating }: { rating: number }) {
   return (
     <div className="flex items-center gap-0.5 justify-center">
@@ -119,8 +110,9 @@ export default function PlayerView() {
 
   return (
     <div className="w-full max-w-4xl mx-auto px-6 pt-16 pb-32 flex flex-col items-center">
+      {coverUrl && <AlbumBackdrop coverUrl={coverUrl} />}
       {/* Album Art */}
-      <div className="relative group flex-shrink-0 cursor-pointer mb-10" onClick={() => setShowViz(v => !v)}>
+      <div className="relative group flex-shrink-0 cursor-pointer mb-10 animate-scale-in" onClick={() => setShowViz(v => !v)}>
         <div className="w-72 h-72 md:w-80 md:h-80 rounded-3xl overflow-hidden" style={{ boxShadow: '0 0 60px rgba(208,188,255,0.08)' }}>
           {showViz ? (
             <VisualizationView mode={vizMode} onModeChange={setVizMode} />
@@ -156,7 +148,7 @@ export default function PlayerView() {
       </div>
 
       {/* Track Info */}
-      <div className="text-center flex flex-col items-center max-w-lg">
+      <div className="text-center flex flex-col items-center max-w-lg animate-fade-in">
         <div className="flex items-center gap-3 justify-center">
           <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight truncate" style={{ color: '#E5E2E1' }}>
             {currentTrack?.title ?? 'Not playing'}
@@ -186,20 +178,7 @@ export default function PlayerView() {
       </div>
 
       {/* Progress Bar */}
-      <div className="w-full max-w-lg mt-10 space-y-1">
-        <div className="relative h-1 rounded-full overflow-hidden cursor-pointer"
-          style={{ background: 'rgba(255,255,255,0.08)' }}
-          onClick={e => { const rect = e.currentTarget.getBoundingClientRect(); seek((e.clientX - rect.left) / rect.width * duration); }}>
-          {duration > 0 && (
-            <div className="absolute top-0 left-0 h-full rounded-full transition-all duration-300"
-              style={{ width: `${Math.min((progress / duration) * 100, 100)}%`, background: '#D0BCFF' }} />
-          )}
-        </div>
-        <div className="flex justify-between text-[10px] font-mono" style={{ color: '#CBC3D7' }}>
-          <span>{formatTime(progress)}</span>
-          <span>{formatTime(duration)}</span>
-        </div>
-      </div>
+      <DraggableProgressBar progress={progress} duration={duration} buffered={playback.buffered} onSeek={seek} />
 
       {/* Transport Controls */}
       <div className="flex items-center gap-6 md:gap-10 mt-6">
@@ -245,7 +224,7 @@ export default function PlayerView() {
 
       {/* Queue Section — full list, play-head cards slot in at current position */}
       {queue.length > 0 && (
-        <section className="w-full max-w-3xl mt-10">
+        <section id="queue-section" className="w-full max-w-3xl mt-10">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-extrabold" style={{ color: '#E5E2E1' }}>Queue</h2>
             <div className="flex gap-3">

@@ -34,6 +34,14 @@ export interface SubsonicAlbum {
   song?: SubsonicSong[];
 }
 
+export interface SubsonicArtist {
+  id: string;
+  name: string;
+  coverArt?: string;
+  albumCount?: number;
+  album?: SubsonicAlbum[];
+}
+
 export interface SubsonicResponse {
   'subsonic-response': {
     status: string;

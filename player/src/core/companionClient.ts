@@ -159,6 +159,59 @@ export async function getNextRecommendation(currentSongId: string): Promise<Subs
   }
 }
 
+export async function getDailyMixes(): Promise<any[]> {
+  if (!COMPANION_URL) return [];
+  try {
+    const res = await fetch(`${COMPANION_URL}/daily-mixes`, { headers: apiHeaders(), signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.mixes ?? [];
+  } catch { return []; }
+}
+
+export async function getDailyMix(id: string): Promise<{ id: string; title: string; subtitle: string; songs: SubsonicSong[] } | null> {
+  if (!COMPANION_URL) return null;
+  try {
+    const res = await fetch(`${COMPANION_URL}/daily-mix/${encodeURIComponent(id)}`, { headers: apiHeaders(), signal: AbortSignal.timeout(10000) });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+export async function getArtistIntro(artistId: string): Promise<{ artist: { id: string; name: string; coverArt?: string }; tracks: SubsonicSong[]; trackCount: number } | null> {
+  if (!COMPANION_URL) return null;
+  try {
+    const res = await fetch(`${COMPANION_URL}/artist-intro/${encodeURIComponent(artistId)}`, { headers: apiHeaders(), signal: AbortSignal.timeout(10000) });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+export async function getGenres(): Promise<{ genre: string; count: number }[]> {
+  if (!COMPANION_URL) return [];
+  try {
+    const res = await fetch(`${COMPANION_URL}/genres`, { headers: apiHeaders(), signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.genres ?? [];
+  } catch { return []; }
+}
+
+export async function getGenreMix(genre: string): Promise<SubsonicSong[]> {
+  if (!COMPANION_URL) return [];
+  try {
+    const res = await fetch(`${COMPANION_URL}/genre-mix/${encodeURIComponent(genre)}`, { headers: apiHeaders(), signal: AbortSignal.timeout(10000) });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.songs ?? [];
+  } catch { return []; }
+}
+
+export function getPlaylistCoverUrl(id: string): string {
+  if (!COMPANION_URL) return '';
+  return `${COMPANION_URL}/playlist-cover/${encodeURIComponent(id)}`;
+}
+
 export interface SongRating {
   id: string;
   rating: number; // 0-5

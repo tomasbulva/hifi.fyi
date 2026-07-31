@@ -75,6 +75,22 @@ export class CompanionDB {
         id INTEGER PRIMARY KEY DEFAULT 1, last_scan TEXT,
         total_songs INTEGER DEFAULT 0, scanning INTEGER DEFAULT 0, progress INTEGER DEFAULT 0
       );
+      CREATE TABLE IF NOT EXISTS daily_mixes (
+        id TEXT PRIMARY KEY,
+        title TEXT,
+        subtitle TEXT,
+        icon TEXT,
+        song_ids TEXT,
+        generated_at TEXT,
+        expires_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_daily_mixes_expires ON daily_mixes(expires_at);
+      CREATE TABLE IF NOT EXISTS playlist_covers (
+        id TEXT PRIMARY KEY,
+        data TEXT,
+        content_type TEXT,
+        created_at TEXT
+      );
     `);
   }
 
@@ -164,6 +180,90 @@ export class CompanionDB {
 
   getScanStatus(): { last_scan: string; total_songs: number; scanning: number; progress: number } {
     return (this.db.prepare('SELECT * FROM scan_status WHERE id = 1').get() as any) ?? { last_scan: '', total_songs: 0, scanning: 0, progress: 0 };
+  }
+
+  getGenres(): { genre: string; count: number }[] {
+    return this.db.prepare('SELECT genre, COUNT(*) as count FROM songs WHERE genre IS NOT NULL AND genre != "" GROUP BY genre ORDER BY count DESC').all() as { genre: string; count: number }[];
+  }
+
+  getDailyMixes(): { id: string; title: string; subtitle: string; icon: string; song_ids: string; generated_at: string; expires_at: string }[] {
+    // Check if we have valid (non-expired) mixes
+    const now = new Date().toISOString();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayStr = today.toISOString();
+
+    let mixes = this.db.prepare('SELECT * FROM daily_mixes WHERE expires_at > ?').all(now) as any[];
+
+    if (mixes.length === 0) {
+      // Generate new daily mixes
+      mixes = this.generateDailyMixes();
+    }
+
+    return mixes;
+  }
+
+  getDailyMix(id: string): { id: string; title: string; subtitle: string; icon: string; songs: any[] } | null {
+    const mix = this.db.prepare('SELECT * FROM daily_mixes WHERE id = ?').get(id) as any;
+    if (!mix) return null;
+    const songIds: string[] = JSON.parse(mix.song_ids);
+    const songs = songIds.map(sid => this.getSongById(sid)).filter(Boolean);
+    return { ...mix, songs };
+  }
+
+  private generateDailyMixes(): any[] {
+    const now = new Date();
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(0, 0, 0, 0);
+    const expiresAt = tomorrow.toISOString();
+    const generatedAt = now.toISOString();
+
+    // Mix 1: Top played
+    const topPlayed = this.db.prepare('SELECT id FROM songs WHERE play_count > 0 ORDER BY play_count DESC, user_rating DESC LIMIT 50').all() as { id: string }[];
+    // Mix 2: Top rated
+    const topRated = this.db.prepare('SELECT id FROM songs WHERE user_rating >= 3 ORDER BY user_rating DESC, RANDOM() LIMIT 50').all() as { id: string }[];
+    // Mix 3: Discovery (low play count, any rating)
+    const discovery = this.db.prepare('SELECT id FROM songs WHERE play_count <= 2 ORDER BY RANDOM() LIMIT 50').all() as { id: string }[];
+    // Mix 4: Chill mood
+    const chill = this.db.prepare('SELECT id FROM songs WHERE mood = ? ORDER BY user_rating DESC, RANDOM() LIMIT 50').all('chill') as { id: string }[];
+    // Mix 5: Energetic mood
+    const energetic = this.db.prepare('SELECT id FROM songs WHERE mood = ? ORDER BY user_rating DESC, RANDOM() LIMIT 50').all('energetic') as { id: string }[];
+
+    // Fallback: if any mix is empty, fill with random songs
+    const fillRandom = (ids: { id: string }[]) => {
+      if (ids.length >= 10) return ids.map(s => s.id);
+      const existing = new Set(ids.map(s => s.id));
+      const random = this.db.prepare('SELECT id FROM songs ORDER BY RANDOM() LIMIT ?').all(50 - ids.length) as { id: string }[];
+      return [...ids.map(s => s.id), ...random.map(s => s.id).filter(id => !existing.has(id))];
+    };
+
+    const mixes = [
+      { id: 'daily-mix-1', title: 'Daily Mix 1', subtitle: 'Your top played tracks', icon: 'trending_up', song_ids: JSON.stringify(fillRandom(topPlayed)), generated_at: generatedAt, expires_at: expiresAt },
+      { id: 'daily-mix-2', title: 'Daily Mix 2', subtitle: 'Top rated tracks', icon: 'star', song_ids: JSON.stringify(fillRandom(topRated)), generated_at: generatedAt, expires_at: expiresAt },
+      { id: 'daily-mix-3', title: 'Daily Mix 3', subtitle: 'Discover something new', icon: 'explore', song_ids: JSON.stringify(fillRandom(discovery)), generated_at: generatedAt, expires_at: expiresAt },
+      { id: 'daily-mix-4', title: 'Daily Mix 4', subtitle: 'Chill vibes', icon: 'spa', song_ids: JSON.stringify(fillRandom(chill)), generated_at: generatedAt, expires_at: expiresAt },
+      { id: 'daily-mix-5', title: 'Daily Mix 5', subtitle: 'High energy', icon: 'bolt', song_ids: JSON.stringify(fillRandom(energetic)), generated_at: generatedAt, expires_at: expiresAt },
+    ];
+
+    // Clear old mixes and insert new ones
+    this.db.prepare('DELETE FROM daily_mixes').run();
+    const stmt = this.db.prepare('INSERT INTO daily_mixes (id, title, subtitle, icon, song_ids, generated_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
+    for (const mix of mixes) {
+      stmt.run(mix.id, mix.title, mix.subtitle, mix.icon, mix.song_ids, mix.generated_at, mix.expires_at);
+    }
+
+    return mixes;
+  }
+
+  getPlaylistCover(id: string): { data: string; contentType: string } | null {
+    const row = this.db.prepare('SELECT data, content_type FROM playlist_covers WHERE id = ?').get(id) as any;
+    if (!row) return null;
+    return { data: row.data, contentType: row.content_type };
+  }
+
+  savePlaylistCover(id: string, data: string, contentType: string): void {
+    this.db.prepare('INSERT OR REPLACE INTO playlist_covers (id, data, content_type, created_at) VALUES (?, ?, ?, ?)').run(id, data, contentType, new Date().toISOString());
   }
 
   close(): void { this.db.close(); }

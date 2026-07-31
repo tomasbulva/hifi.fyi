@@ -375,6 +375,118 @@ app.get('/api/next', authMiddleware, async (req, res) => {
   }
 });
 
+// ── Daily Mix endpoints ──
+
+app.get('/api/daily-mixes', authMiddleware, (req, res) => {
+  const mixes = db.getDailyMixes();
+  res.json({ mixes });
+});
+
+app.get('/api/daily-mix/:id', authMiddleware, (req, res) => {
+  const mix = db.getDailyMix(req.params.id);
+  if (!mix) return res.status(404).json({ error: 'Mix not found' });
+  res.json(mix);
+});
+
+// ── Artist Intro endpoint ──
+
+app.get('/api/artist-intro/:artistId', authMiddleware, async (req, res) => {
+  if (!subsonicClient) return res.status(503).json({ error: 'Navidrome not configured' });
+  const artistId = req.params.artistId;
+  try {
+    const artist = await subsonicClient.getArtist(artistId);
+    const albums = artist.album ?? [];
+    // Gather all songs from all albums
+    const allSongs: any[] = [];
+    for (const album of albums) {
+      const albumData = await subsonicClient.getAlbum(album.id);
+      for (const song of (albumData.song ?? [])) {
+        const cached = db.getSongById(song.id);
+        allSongs.push({ ...song, userRating: cached?.user_rating ?? 0, playCount: cached?.play_count ?? 0 });
+      }
+    }
+    // Sort by play count + rating (popularity), take top 25
+    allSongs.sort((a, b) => {
+      const scoreA = (a.playCount ?? 0) * 2 + (a.userRating ?? 0);
+      const scoreB = (b.playCount ?? 0) * 2 + (b.userRating ?? 0);
+      return scoreB - scoreA;
+    });
+    const topTracks = allSongs.slice(0, 25);
+    // Get similar songs for discovery
+    let discovery: any[] = [];
+    if (topTracks.length > 0) {
+      try {
+        const similar = await subsonicClient.getSimilarSongs2(topTracks[0].id, 5);
+        // Filter out songs already in topTracks
+        const existingIds = new Set(topTracks.map(s => s.id));
+        discovery = similar.filter(s => !existingIds.has(s.id)).slice(0, 5);
+      } catch { /* ignore */ }
+    }
+    res.json({
+      artist: { id: artistId, name: artist.name, coverArt: artist.coverArt },
+      tracks: [...topTracks, ...discovery],
+      trackCount: topTracks.length + discovery.length,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Genre Mix endpoints ──
+
+app.get('/api/genres', authMiddleware, (req, res) => {
+  const genres = db.getGenres();
+  res.json({ genres });
+});
+
+app.get('/api/genre-mix/:genre', authMiddleware, (req, res) => {
+  const genre = decodeURIComponent(req.params.genre);
+  const songs = db.getSongsByGenre(genre, 50);
+  // Enrich with cached data
+  const enriched = songs.map(s => {
+    const cached = db.getSongById(s.id);
+    return { ...s, userRating: cached?.user_rating ?? 0 };
+  });
+  // Sort by rating desc, then random
+  enriched.sort((a, b) => (b.userRating ?? 0) - (a.userRating ?? 0));
+  // Shuffle top half, keep order for bottom half
+  const midpoint = Math.floor(enriched.length / 2);
+  const top = enriched.slice(0, midpoint).sort(() => Math.random() - 0.5);
+  const bottom = enriched.slice(midpoint);
+  res.json({ songs: [...top, ...bottom], genre });
+});
+
+// ── Playlist cover endpoint ──
+
+app.get('/api/playlist-cover/:id', authMiddleware, async (req, res) => {
+  const id = req.params.id;
+  // Try to get cached cover
+  const cached = db.getPlaylistCover(id);
+  if (cached) {
+    res.set('Content-Type', cached.contentType);
+    return res.send(Buffer.from(cached.data, 'base64'));
+  }
+  // Generate a mosaic cover from song cover art
+  // For now, return a simple SVG placeholder with gradient
+  const hash = id.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
+  const hue1 = hash % 360;
+  const hue2 = (hash * 7) % 360;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300">
+    <defs>
+      <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" style="stop-color:hsl(${hue1},60%,30%)"/>
+        <stop offset="100%" style="stop-color:hsl(${hue2},60%,20%)"/>
+      </linearGradient>
+    </defs>
+    <rect width="300" height="300" fill="url(#g)"/>
+    <text x="150" y="150" text-anchor="middle" dominant-baseline="middle" fill="rgba(255,255,255,0.3)" font-size="48" font-family="sans-serif" font-weight="bold">♪</text>
+  </svg>`;
+  const data = Buffer.from(svg).toString('base64');
+  db.savePlaylistCover(id, data, 'image/svg+xml');
+  res.set('Content-Type', 'image/svg+xml');
+  res.send(Buffer.from(data, 'base64'));
+});
+
 // ── Sonos endpoints (/api/sonos/*) ──
 
 const SONOS_SSDP_ADDR = '239.255.255.250';

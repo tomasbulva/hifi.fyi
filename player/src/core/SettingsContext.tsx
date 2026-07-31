@@ -7,6 +7,7 @@ interface Settings {
   persistQueue: boolean;
   companionUrl: string;
   companionApiKey: string;
+  autoplay: boolean;
 }
 
 interface SettingsContextValue {
@@ -23,6 +24,7 @@ const defaultSettings: Settings = {
   persistQueue: true,
   companionUrl: '',
   companionApiKey: '',
+  autoplay: true,
 };
 
 const SettingsContext = createContext<SettingsContextValue | null>(null);

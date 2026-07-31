@@ -1,9 +1,10 @@
 import React, { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react';
 import { getAudioEngine, AudioEngine } from './AudioEngine';
-import { getStreamUrl, getArtists, getArtist, getAlbum, getCoverArtUrl, search as searchApi, getAlbumList2, getPlaylists, getPlaylist, getSongs, getInternetRadioStations, createPlaylist, star as starSong, unstar as unstarSong } from './api';
+import { getStreamUrl, getArtists, getAlbum, getCoverArtUrl, search as searchApi, getAlbumList2, getPlaylists, getSongs, getInternetRadioStations, createPlaylist, star as starSong, unstar as unstarSong } from './api';
 import { googleCastProvider, googleCastControls } from './googleCastProvider';
 import { sonosControls, getProxyUrl, proxyApiHeaders } from './sonosProvider';
 import { useSettings } from './SettingsContext';
+import { getNextRecommendation } from './companionClient';
 import { imageCache } from './imageCache';
 import type {
   SubsonicArtist, SubsonicAlbum, SubsonicSong,
@@ -57,8 +58,6 @@ interface MusicContextValue {
   // Playlists
   playlists: SubsonicPlaylist[];
   loadPlaylists: () => Promise<void>;
-  selectedPlaylist: (SubsonicPlaylist & { entry: SubsonicSong[] }) | null;
-  selectPlaylist: (playlist: SubsonicPlaylist) => Promise<void>;
 
   // Songs
   allSongs: SubsonicSong[];
@@ -69,15 +68,6 @@ interface MusicContextValue {
   // Radios
   radios: SubsonicRadioStation[];
   loadRadios: () => Promise<void>;
-
-  // Browsing
-  selectedArtist: (SubsonicArtist & { album: SubsonicAlbum[] }) | null;
-  selectArtist: (artist: SubsonicArtist) => Promise<void>;
-  selectedAlbum: (SubsonicAlbum & { song: SubsonicSong[] }) | null;
-  selectAlbum: (album: SubsonicAlbum) => Promise<void>;
-  goBack: () => void;
-  goBackToRoot: () => void;
-  browsePath: string[]; // ['Artists', 'Nirvana', 'Nevermind']
 
   // Search
   searchResults: any;
@@ -236,15 +226,12 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   const [artistsFull, setArtistsFull] = useState<SubsonicArtist[]>([]); // full list for client-side pagination
   const [albumsByType, setAlbumsByType] = useState<Record<string, SubsonicAlbum[]>>({});
   const [albumsOffsets, setAlbumsOffsets] = useState<Record<string, number>>({});
+  const [albumsLastPageSize, setAlbumsLastPageSize] = useState<Record<string, number>>({});
   const [playlists, setPlaylists] = useState<SubsonicPlaylist[]>([]);
   const [allSongs, setAllSongs] = useState<SubsonicSong[]>([]);
   const [songsOffset, setSongsOffset] = useState(0);
   const [songsHasMore, setSongsHasMore] = useState(true);
   const [radios, setRadios] = useState<SubsonicRadioStation[]>([]);
-  const [selectedPlaylist, setSelectedPlaylist] = useState<(SubsonicPlaylist & { entry: SubsonicSong[] }) | null>(null);
-  const [selectedArtist, setSelectedArtist] = useState<(SubsonicArtist & { album: SubsonicAlbum[] }) | null>(null);
-  const [selectedAlbum, setSelectedAlbum] = useState<(SubsonicAlbum & { song: SubsonicSong[] }) | null>(null);
-  const [browsePath, setBrowsePath] = useState<string[]>([]);
   const [searchResults, setSearchResults] = useState<any>(null);
 
   // Cast target tracking — when set, playback routes through Sonos
@@ -321,7 +308,21 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
           } else if (playback.repeat === 'all' && nextIdx >= queue.length) {
             nextIdx = 0;
           } else if (nextIdx >= queue.length) {
-            setPlayback(prev => ({ ...prev, isPlaying: false }));
+            // Keep Playing: fetch next recommendation when queue ends
+            if (settings.autoplay && playback.currentTrack) {
+              getNextRecommendation(playback.currentTrack.id).then(song => {
+                if (song) {
+                  addToQueue(song);
+                  playFromQueueIndex(queueIndex + 1);
+                } else {
+                  setPlayback(prev => ({ ...prev, isPlaying: false }));
+                }
+              }).catch(() => {
+                setPlayback(prev => ({ ...prev, isPlaying: false }));
+              });
+            } else {
+              setPlayback(prev => ({ ...prev, isPlaying: false }));
+            }
             return;
           }
           playFromQueueIndex(nextIdx);
@@ -370,9 +371,6 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     // If queue is empty or playing outside queue, build a fresh queue
     setQueue([{ song: track, queuedAt: Date.now() }]);
     setQueueIndex(0);
-    setBrowsePath([]);
-    setSelectedArtist(null);
-    setSelectedAlbum(null);
 
     if (isCasting()) {
       castStreamUrl(track);
@@ -518,13 +516,18 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
 
   const replaceQueue = useCallback((tracks: SubsonicSong[]) => {
     if (tracks.length === 0) return;
-    engine.stop();
     const newQueue = tracks.map(song => ({ song, queuedAt: Date.now() }));
     setQueue(newQueue);
     setQueueIndex(0);
-    engine.play(tracks[0]);
+    
+    if (isCasting()) {
+      castStreamUrl(tracks[0]);
+    } else {
+      engine.stop();
+      engine.play(tracks[0]);
+      setCodecInfo(engine.getCodecInfo());
+    }
     setPlayback(prev => ({ ...prev, currentTrack: tracks[0], isPlaying: true }));
-    setCodecInfo(engine.getCodecInfo());
   }, [engine]);
 
   const removeFromQueue = useCallback((index: number) => {
@@ -639,6 +642,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       const albums = await getAlbumList2(type, { size: 48, offset: 0 });
       setAlbumsByType(prev => ({ ...prev, [type]: albums }));
       setAlbumsOffsets(prev => ({ ...prev, [type]: albums.length }));
+      setAlbumsLastPageSize(prev => ({ ...prev, [type]: albums.length }));
     } catch (e) {
       console.error('Failed to load albums:', type, e);
       setAlbumsByType(prev => ({ ...prev, [type]: [] }));
@@ -647,11 +651,9 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   }, [albumsByType]);
 
   const albumsHasMore = useCallback((type: AlbumListType) => {
-    const offset = albumsOffsets[type] ?? 0;
-    const loaded = (albumsByType[type] ?? []).length;
-    // If we got a full page last time, there might be more
-    return offset > 0 && loaded >= offset;
-  }, [albumsByType, albumsOffsets]);
+    const lastSize = albumsLastPageSize[type] ?? 0;
+    return lastSize >= 48;
+  }, [albumsLastPageSize]);
 
   const loadMoreAlbums = useCallback(async (type: AlbumListType) => {
     const offset = albumsOffsets[type] ?? 0;
@@ -661,6 +663,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       if (more.length === 0) return; // no more
       setAlbumsByType(prev => ({ ...prev, [type]: [...(prev[type] ?? []), ...more] }));
       setAlbumsOffsets(prev => ({ ...prev, [type]: offset + more.length }));
+      setAlbumsLastPageSize(prev => ({ ...prev, [type]: more.length }));
     } catch (e) {
       console.error('Failed to load more albums:', type, e);
     }
@@ -744,47 +747,6 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     imageCache.preload(urls);
   }, [allSongs]);
 
-  const selectPlaylist = useCallback(async (playlist: SubsonicPlaylist) => {
-    const p = await getPlaylist(playlist.id);
-    setSelectedPlaylist(p);
-    setSelectedAlbum(null);
-    setSelectedArtist(null);
-    setBrowsePath(['Playlists', playlist.name]);
-  }, []);
-
-  const selectArtist = useCallback(async (artist: SubsonicArtist) => {
-    const a = await getArtist(artist.id);
-    setSelectedArtist(a);
-    setSelectedAlbum(null);
-    setBrowsePath([artist.name]);
-  }, []);
-
-  const selectAlbum = useCallback(async (album: SubsonicAlbum) => {
-    const a = await getAlbum(album.id);
-    setSelectedAlbum(a);
-    setBrowsePath(prev => [...prev, album.name]);
-  }, []);
-
-  const goBack = useCallback(() => {
-    if (selectedAlbum) {
-      setSelectedAlbum(null);
-      setBrowsePath(prev => prev.slice(0, -1));
-    } else if (selectedArtist) {
-      setSelectedArtist(null);
-      setBrowsePath([]);
-    } else if (selectedPlaylist) {
-      setSelectedPlaylist(null);
-      setBrowsePath(prev => prev.slice(0, -1));
-    }
-  }, [selectedArtist, selectedAlbum, selectedPlaylist]);
-
-  const goBackToRoot = useCallback(() => {
-    setSelectedAlbum(null);
-    setSelectedArtist(null);
-    setSelectedPlaylist(null);
-    setBrowsePath([]);
-  }, []);
-
   const searchFn = useCallback(async (query: string) => {
     if (!query.trim()) {
       setSearchResults(null);
@@ -844,12 +806,9 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       codecInfo,
       artists, loadArtists, artistsHasMore: artists.length < artistsFull.length, loadMoreArtists,
       albumsByType, loadAlbumList, albumsHasMore, loadMoreAlbums,
-      playlists, loadPlaylists, selectedPlaylist, selectPlaylist,
+      playlists, loadPlaylists,
       allSongs, loadAllSongs, songsHasMore, loadMoreSongs,
       radios, loadRadios,
-      selectedArtist, selectArtist,
-      selectedAlbum, selectAlbum,
-      goBack, goBackToRoot, browsePath,
       searchResults, search: searchFn,
       view, setView,
       starredIds, toggleStar, isStarred: isStarredFn,

@@ -168,6 +168,12 @@ export const MOCK_RATINGS: Record<string, { id: string; rating: number; starred:
   'song-7': { id: 'song-7', rating: 0, starred: false, playCount: 3, genre: 'indie', mood: 'neutral' },
 };
 
+// 1x1 transparent PNG (used for cover art and playlist covers)
+const PNG_1x1 = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+  'base64'
+);
+
 /**
  * Set up API mocks for a Playwright page.
  * Intercepts all /rest/* and /api/* calls and returns mock data.
@@ -231,6 +237,38 @@ export async function setupApiMocks(page: import('@playwright/test').Page) {
     });
   });
 
+  // Mock Subsonic getArtist
+  await page.route('**/rest/getArtist.view**', (route) => {
+    const url = new URL(route.request().url());
+    const artistId = url.searchParams.get('id');
+    const artist = MOCK_ARTISTS.find(a => a.id === artistId) ?? MOCK_ARTISTS[0];
+    const albums = MOCK_ALBUMS.filter(a => a.artistId === artistId);
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        'subsonic-response': {
+          status: 'ok',
+          artist: { ...artist, album: albums },
+        },
+      }),
+    });
+  });
+
+  // Mock Subsonic getPlaylist
+  await page.route('**/rest/getPlaylist.view**', (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        'subsonic-response': {
+          status: 'ok',
+          playlist: { id: 'pl-1', name: 'Test Playlist', songCount: 2, entry: MOCK_SONGS.slice(0, 2) },
+        },
+      }),
+    });
+  });
+
   // Mock Subsonic search3 (for getSongs and general search)
   await page.route('**/rest/search3.view**', (route) => {
     route.fulfill({
@@ -284,15 +322,10 @@ export async function setupApiMocks(page: import('@playwright/test').Page) {
 
   // Mock Subsonic getCoverArt (return a 1x1 PNG)
   await page.route('**/rest/getCoverArt.view**', (route) => {
-    // 1x1 transparent PNG
-    const png = Buffer.from(
-      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
-      'base64'
-    );
     route.fulfill({
       status: 200,
       contentType: 'image/png',
-      body: png,
+      body: PNG_1x1,
     });
   });
 
@@ -329,6 +362,20 @@ export async function setupApiMocks(page: import('@playwright/test').Page) {
         'subsonic-response': {
           status: 'ok',
           starred: { artist: [], album: [], song: starredSongs },
+        },
+      }),
+    });
+  });
+
+  // Mock Subsonic createPlaylist
+  await page.route('**/rest/createPlaylist.view**', (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        'subsonic-response': {
+          status: 'ok',
+          playlist: { id: 'pl-new', name: 'New Playlist', songCount: 0 },
         },
       }),
     });
@@ -425,6 +472,109 @@ export async function setupApiMocks(page: import('@playwright/test').Page) {
     });
   });
 
+  // Mock Companion API daily-mixes
+  await page.route('**/api/daily-mixes**', (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        mixes: [{
+          id: 'daily-mix-1',
+          title: 'Daily Mix 1',
+          subtitle: 'Top played',
+          icon: 'trending_up',
+          song_ids: '["song-1","song-2"]',
+          generated_at: '2026-07-31',
+          expires_at: '2026-08-01',
+        }],
+      }),
+    });
+  });
+
+  // Mock Companion API daily-mix detail
+  await page.route('**/api/daily-mix/**', (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 'daily-mix-1',
+        title: 'Daily Mix 1',
+        subtitle: 'Top played',
+        songs: MOCK_SONGS.slice(0, 3),
+      }),
+    });
+  });
+
+  // Mock Companion API genres
+  await page.route('**/api/genres**', (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        genres: [
+          { genre: 'rock', count: 10 },
+          { genre: 'jazz', count: 5 },
+        ],
+      }),
+    });
+  });
+
+  // Mock Companion API genre-mix
+  await page.route('**/api/genre-mix/**', (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        songs: MOCK_SONGS.slice(0, 3),
+        genre: 'rock',
+      }),
+    });
+  });
+
+  // Mock Companion API artist-intro
+  await page.route('**/api/artist-intro/**', (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        artist: { id: 'artist-1', name: 'Test Artist' },
+        tracks: MOCK_SONGS.slice(0, 5),
+        trackCount: 5,
+      }),
+    });
+  });
+
+  // Mock Companion API playlist-cover
+  await page.route('**/api/playlist-cover/**', (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: 'image/png',
+      body: PNG_1x1,
+    });
+  });
+
+  // Mock auth ban-status
+  await page.route('**/api/auth/ban-status**', (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ banned: false }),
+    });
+  });
+
+  // Mock auth success/failed
+  await page.route('**/api/auth/success**', (route) => {
+    route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+  });
+
+  await page.route('**/api/auth/failed**', (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ banned: false }),
+    });
+  });
+
   return { starred };
 }
 
@@ -462,8 +612,8 @@ export async function injectPlayingTrack(
     }));
     // Also inject a queue so queue-related features work
     localStorage.setItem('hifi_queue', JSON.stringify([
-      { song: track, queueIndex: 0 },
-      { song: { ...track, id: 'song-2', title: 'Next Song', artist: 'Next Artist' }, queueIndex: 1 },
+      { song: track, queuedAt: Date.now() },
+      { song: { ...track, id: 'song-2', title: 'Next Song', artist: 'Next Artist' }, queuedAt: Date.now() },
     ]));
   }, song);
 }

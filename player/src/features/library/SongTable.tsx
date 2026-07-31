@@ -1,44 +1,8 @@
 import { useState } from 'react';
 import type { SubsonicSong } from '../../core/types';
 import { CachedCover } from '../../components/CachedCover';
-import { LOSSLESS_FORMATS } from '../../core/quality';
+import { PlayingBars, CodecPill } from '../../components/shared';
 import { formatTime } from '../../core/format';
-
-// Animated equalizer bars
-function PlayingBars() {
-  return (
-    <div className="flex items-end gap-[1px] h-3 ml-0.5">
-      <div className="w-0.5 rounded-full animate-pulse-soft" style={{ height: '30%', background: '#D0BCFF', animationDelay: '0ms' }} />
-      <div className="w-0.5 rounded-full animate-pulse-soft" style={{ height: '70%', background: '#D0BCFF', animationDelay: '150ms' }} />
-      <div className="w-0.5 rounded-full animate-pulse-soft" style={{ height: '50%', background: '#D0BCFF', animationDelay: '300ms' }} />
-      <div className="w-0.5 rounded-full animate-pulse-soft" style={{ height: '85%', background: '#D0BCFF', animationDelay: '450ms' }} />
-    </div>
-  );
-}
-
-function CodecPill({ song }: { song: SubsonicSong }) {
-  const suffix = (song.suffix ?? '').toLowerCase();
-  if (!suffix) return null;
-  const bitRate = song.bitRate ?? 0;
-  const lossless = LOSSLESS_FORMATS.includes(suffix);
-  const label = lossless
-    ? 'LOSSLESS'
-    : suffix.toUpperCase();
-  const isHiRes = lossless && bitRate >= 2304;
-
-  return (
-    <span
-      className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ml-2"
-      style={{
-        background: isHiRes ? 'rgba(68, 226, 205, 0.12)' : lossless ? 'rgba(208, 188, 255, 0.1)' : 'rgba(255,255,255,0.05)',
-        color: isHiRes ? '#44E2CD' : lossless ? '#CBC3D7' : '#CBC3D7',
-        border: `1px solid ${isHiRes ? 'rgba(68,226,205,0.25)' : lossless ? 'rgba(208,188,255,0.15)' : 'rgba(255,255,255,0.08)'}`,
-      }}
-    >
-      {isHiRes ? 'HI-RES' : label}{lossless && !isHiRes ? '' : ''}{!lossless && bitRate ? ` ${bitRate}` : ''}
-    </span>
-  );
-}
 
 type Column = '#' | 'title' | 'artist' | 'album' | 'quality' | 'added' | 'duration' | 'checkbox' | 'favorite';
 

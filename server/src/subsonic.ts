@@ -4,7 +4,7 @@
  */
 
 import { createHash } from 'crypto';
-import type { SubsonicSong, SubsonicAlbum, SubsonicResponse } from './types.js';
+import type { SubsonicSong, SubsonicAlbum, SubsonicArtist, SubsonicResponse } from './types.js';
 
 const API_VERSION = '1.16.1';
 const CLIENT_NAME = 'hifi-companion';
@@ -74,6 +74,11 @@ export class SubsonicClient {
   async getTopSongs(artist: string, count = 50): Promise<SubsonicSong[]> {
     const sr = await this.request('getTopSongs.view', { artist, count });
     return sr.topSongs?.song ?? [];
+  }
+
+  async getArtist(artistId: string): Promise<SubsonicArtist> {
+    const sr = await this.request('getArtist.view', { id: artistId });
+    return sr.artist;
   }
 
   async getRandomSongs(size = 50, fromYear?: number, toYear?: number, genre?: string): Promise<SubsonicSong[]> {
