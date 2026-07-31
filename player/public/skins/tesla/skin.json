@@ -1,0 +1,58 @@
+{
+  "name": "Tesla Touch",
+  "version": "1.0.0",
+  "author": "hifi",
+  "description": "Big touch targets for in-car use, higher contrast, larger fonts",
+  "prefersCarMode": true,
+  "tokens": {
+    "colors": {
+      "background": "#000000",
+      "surface": "#0d0d0d",
+      "surfaceHover": "#1a1a1a",
+      "surfaceActive": "#262626",
+      "primary": "#3b82f6",
+      "primaryHover": "#60a5fa",
+      "text": "#ffffff",
+      "textSecondary": "#a3a3a3",
+      "textMuted": "#737373",
+      "border": "#262626",
+      "lossless": "#4ade80",
+      "compressed": "#60a5fa",
+      "castActive": "#22d3ee",
+      "castIdle": "#525252",
+      "progressFill": "#3b82f6",
+      "progressBuffered": "rgba(59, 130, 246, 0.2)",
+      "progressBg": "#262626",
+      "error": "#ef4444",
+      "success": "#22c55e",
+      "warning": "#f59e0b",
+      "overlay": "rgba(0,0,0,0.8)"
+    },
+    "fonts": {
+      "ui": "'Inter', -apple-system, sans-serif",
+      "display": "'Inter', -apple-system, sans-serif",
+      "mono": "'JetBrains Mono', 'Fira Code', monospace"
+    },
+    "sizing": {
+      "touchTarget": "64px",
+      "fontBase": "18px",
+      "fontLarge": "28px",
+      "fontSmall": "14px",
+      "radiusSm": "10px",
+      "radiusMd": "14px",
+      "radiusLg": "20px",
+      "spacingXs": "6px",
+      "spacingSm": "12px",
+      "spacingMd": "20px",
+      "spacingLg": "28px",
+      "spacingXl": "40px"
+    },
+    "visualization": {
+      "waveformColor": "#3b82f6",
+      "barColor": "#60a5fa",
+      "particleColor": "#93c5fd",
+      "fftSize": "1024",
+      "smoothingTimeConstant": "0.85"
+    }
+  }
+}

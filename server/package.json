@@ -1,0 +1,26 @@
+{
+  "name": "hifi-server",
+  "version": "1.0.0",
+  "description": "hifi — unified server: static frontend, Navidrome proxy, companion, Sonos",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "dev:all": "cd ../player && npm run build && cd ../server && tsx watch src/server.ts",
+    "build": "tsc && node dist/server.js",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0",
+    "dotenv": "^16.4.0",
+    "express": "^5.1.0",
+    "http-proxy-middleware": "^3.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

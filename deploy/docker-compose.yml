@@ -1,0 +1,88 @@
+# hifi — unified deployment
+#
+# One container: frontend + Navidrome proxy + companion + Sonos
+#
+# Usage:
+#   cp .env.example .env  →  edit values
+#   docker compose up -d
+
+version: "3.9"
+
+services:
+  navidrome:
+    image: deluan/navidrome:latest
+    container_name: navidrome
+    user: "${ND_USER}"
+    restart: unless-stopped
+    environment:
+      ND_SCANSCHEDULE: "${ND_SCAN_SCHEDULE}"
+      ND_LOGLEVEL: info
+      ND_SESSIONTIMEOUT: 24h
+      ND_BASEURL: ""
+      ND_ENABLETRANSCODINGCONFIG: "true"
+      ND_IMAGECACHE_SIZE: "1GB"
+    ports:
+      - "4533:4533"
+    volumes:
+      - "${ND_DATA_PATH}:/data"
+      - "${ND_MUSIC_PATH}:/music:ro"
+    networks:
+      - internal
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 512M
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    restart: unless-stopped
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+    networks:
+      - internal
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+
+  hifi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hifi
+    restart: unless-stopped
+    environment:
+      - PORT=4321
+      - NAVIDROME_URL=http://navidrome:4533
+      - NAVIDROME_USER=${COMPANION_USER:-}
+      - NAVIDROME_PASSWORD=${COMPANION_PASSWORD:-}
+      - LASTFM_API_KEY=${LASTFM_API_KEY:-}
+      - PROXY_API_KEY=${PROXY_API_KEY:-}
+      - HOT_THRESHOLD=${HOT_THRESHOLD:-5}
+      - DB_PATH=/data/companion.db
+      - NAVIDROME_LAN_URL=${NAVIDROME_LAN_URL:-}
+    ports:
+      - "4321:4321"
+    volumes:
+      - ./hifi-data:/data
+    networks:
+      - internal
+    depends_on:
+      - navidrome
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 256M
+
+  # Note: For Sonos SSDP discovery to work, run hifi with:
+  #   network_mode: host
+  # instead of ports mapping. SSDP requires UDP multicast on the local network.
+
+networks:
+  internal:
+    driver: bridge

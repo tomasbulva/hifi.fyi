@@ -1,0 +1,57 @@
+{
+  "name": "Default Dark",
+  "version": "1.0.0",
+  "author": "hifi",
+  "description": "The default dark theme — clean, minimal, music-focused",
+  "tokens": {
+    "colors": {
+      "background": "#0a0a0f",
+      "surface": "#14141f",
+      "surfaceHover": "#1e1e2e",
+      "surfaceActive": "#282844",
+      "primary": "#6366f1",
+      "primaryHover": "#818cf8",
+      "text": "#e2e8f0",
+      "textSecondary": "#94a3b8",
+      "textMuted": "#64748b",
+      "border": "#1e293b",
+      "lossless": "#4ade80",
+      "compressed": "#60a5fa",
+      "castActive": "#22d3ee",
+      "castIdle": "#52525b",
+      "progressFill": "#6366f1",
+      "progressBuffered": "rgba(99, 102, 241, 0.2)",
+      "progressBg": "#1e293b",
+      "error": "#ef4444",
+      "success": "#22c55e",
+      "warning": "#f59e0b",
+      "overlay": "rgba(0,0,0,0.6)"
+    },
+    "fonts": {
+      "ui": "'Inter', -apple-system, sans-serif",
+      "display": "'Inter', -apple-system, sans-serif",
+      "mono": "'JetBrains Mono', 'Fira Code', monospace"
+    },
+    "sizing": {
+      "touchTarget": "48px",
+      "fontBase": "15px",
+      "fontLarge": "22px",
+      "fontSmall": "12px",
+      "radiusSm": "6px",
+      "radiusMd": "10px",
+      "radiusLg": "16px",
+      "spacingXs": "4px",
+      "spacingSm": "8px",
+      "spacingMd": "16px",
+      "spacingLg": "24px",
+      "spacingXl": "32px"
+    },
+    "visualization": {
+      "waveformColor": "#6366f1",
+      "barColor": "#818cf8",
+      "particleColor": "#a78bfa",
+      "fftSize": "2048",
+      "smoothingTimeConstant": "0.8"
+    }
+  }
+}

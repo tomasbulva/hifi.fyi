@@ -1,0 +1,15 @@
+# Environment files — don't sync, don't delete
+.env
+.env.local
+.env.*.local
+
+# Data
+data/
+*.db
+
+# Node
+node_modules/
+dist/
+
+# OS
+.DS_Store

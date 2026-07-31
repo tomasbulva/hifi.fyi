@@ -1,0 +1,31 @@
+# Sonos Proxy only (standalone)
+# Use this if Navidrome is running elsewhere and you just need the Sonos proxy
+# on a machine that's on the same network as your Sonos speakers.
+#
+# Usage:
+#   docker compose -f docker-compose.sonos.yml up -d
+#
+# Or build and run directly:
+#   cd ../sonos && docker build -t hifi-sonos-proxy . && docker run -d --network host hifi-sonos-proxy
+
+version: "3.9"
+
+services:
+  sonos-proxy:
+    build:
+      context: ../sonos
+      dockerfile: Dockerfile
+    container_name: hifi-sonos-proxy
+    restart: unless-stopped
+    environment:
+      - CAST_PROXY_PORT=${CAST_PROXY_PORT:-4321}
+      - NAVIDROME_LAN_URL=${NAVIDROME_LAN_URL:-}
+      - PROXY_API_KEY=${PROXY_API_KEY:-}
+      - CORS_ORIGIN=${CORS_ORIGIN:-*}
+    # Host network is required for SSDP/UPnP discovery of Sonos speakers
+    network_mode: host
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
