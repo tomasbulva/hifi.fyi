@@ -292,7 +292,7 @@ app.get('/api/ratings', authMiddleware, (req, res) => {
   res.json({ ratings });
 });
 
-app.get('/api/status', authMiddleware, (req, res) => {
+app.get('/api/status', (req, res) => {
   const status = db.getScanStatus();
   res.json({
     ...status,

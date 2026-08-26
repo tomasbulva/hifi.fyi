@@ -35,22 +35,27 @@ function PlayerApp() {
 
   // Global scan status banner — visible on every page, not just Library
   useEffect(() => {
-    if (!scanStatus) return;
+    if (!scanStatus) {
+      console.log('[banner] scanStatus is null/undefined');
+      return;
+    }
+    console.log('[banner] scanStatus:', JSON.stringify(scanStatus));
     if (scanStatus.scanning) {
-      const total = scanStatus.total_songs || 1;
-      const pct = Math.round((scanStatus.progress / total) * 100);
-      setScanBanner(`Scanning library… ${pct}% (${scanStatus.progress}/${scanStatus.total_songs || '?'} songs)`);
+      // progress from server is already 0-100 percentage
+      const pct = scanStatus.progress;
+      const songs = scanStatus.total_songs || 0;
+      setScanBanner(`Scanning library… ${pct}% (${songs.toLocaleString()} songs found so far)`);
       wasScanning.current = true;
       hasAnnouncedComplete.current = false;
     } else if (wasScanning.current && !hasAnnouncedComplete.current) {
       // Scan just finished (we saw it in progress)
-      setScanBanner(`Scan complete: ${scanStatus.total_songs || '?'} songs indexed`);
+      setScanBanner(`Scan complete: ${scanStatus.total_songs.toLocaleString()} songs indexed`);
       wasScanning.current = false;
       hasAnnouncedComplete.current = true;
       setTimeout(() => setScanBanner(null), 5000);
     } else if (!wasScanning.current && !hasAnnouncedComplete.current && scanStatus.total_songs > 0) {
       // Scan completed before frontend loaded — show the result briefly
-      setScanBanner(`${scanStatus.total_songs} songs indexed ✨`);
+      setScanBanner(`${scanStatus.total_songs.toLocaleString()} songs indexed ✨`);
       hasAnnouncedComplete.current = true;
       setTimeout(() => setScanBanner(null), 5000);
     }
@@ -69,7 +74,7 @@ function PlayerApp() {
 
       {/* Global scan status banner */}
       {scanBanner && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full text-xs font-bold shadow-lg animate-in"
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[9999] px-4 py-2 rounded-full text-xs font-bold shadow-lg animate-in"
           style={{ background: 'rgba(208,188,255,0.95)', color: '#1A0A2E' }}>
           {scanBanner}
         </div>
