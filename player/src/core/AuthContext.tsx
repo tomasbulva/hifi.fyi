@@ -107,6 +107,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = useCallback(() => {
     cachedPassword = '';
     sessionStorage.removeItem(STORAGE_KEY);
+    // Clear persisted playback state — old track/queue won't exist on a different server
+    localStorage.removeItem('hifi_queue');
+    localStorage.removeItem('hifi_last_track');
+    localStorage.removeItem('hifi_codec_info');
     setState({ isLoggedIn: false, serverUrl: '', username: '', error: null });
   }, []);
 

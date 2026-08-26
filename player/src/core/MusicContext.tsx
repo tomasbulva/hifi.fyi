@@ -38,6 +38,7 @@ interface MusicContextValue {
   playNow: (track: SubsonicSong) => void;
   playFromQueue: (index: number) => void;
   clearQueue: () => void;
+  resetPlayback: () => void;
   saveQueueAsPlaylist: (name: string) => Promise<SubsonicPlaylist | null>;
 
   // Codec
@@ -584,7 +585,26 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     setPlayback(prev => ({ ...prev, currentTrack: null, isPlaying: false, progress: 0, duration: 0 }));
   }, [engine]);
 
-  // ---- Cast target management ----
+  // Full playback reset — used when switching backends or logging out
+  const resetPlayback = useCallback(() => {
+    const target = castTargetRef.current;
+    if (target?.type === 'sonos') {
+      sonosControls.stop((target as any).ip).catch(() => {});
+    } else if (target) {
+      googleCastControls.stop();
+    } else {
+      engine.stop();
+    }
+    setQueue([]);
+    setQueueIndex(-1);
+    setPlayback({ isPlaying: false, currentTrack: null, progress: 0, duration: 0, buffered: 0, volume: 0.8, shuffle: false, repeat: 'off' });
+    setCodecInfo(null);
+    setStarredIds(new Set());
+    // Clear persisted state
+    localStorage.removeItem('hifi_queue');
+    localStorage.removeItem('hifi_last_track');
+    localStorage.removeItem('hifi_codec_info');
+  }, [engine]);
 
   const setCastTarget = useCallback((target: CastTarget | null) => {
     // Stop local playback when starting to cast
@@ -815,7 +835,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       playback,
       play, pause, resume, seek, setVolume,
       toggleShuffle, toggleRepeat, nextTrack, prevTrack,
-      queue, addToQueue, replaceQueue, removeFromQueue, playNow, playFromQueue, clearQueue,
+      queue, addToQueue, replaceQueue, removeFromQueue, playNow, playFromQueue, clearQueue, resetPlayback,
       saveQueueAsPlaylist,
       castTarget: castTargetState, setCastTarget,
       codecInfo,

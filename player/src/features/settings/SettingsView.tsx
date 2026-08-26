@@ -3,12 +3,14 @@ import { useSettings } from '../../core/SettingsContext';
 import { useAuth } from '../../core/AuthContext';
 import { reloadProxyUrl, getProxyUrl } from '../../core/sonosProvider';
 import { reconfigureFromSettings } from '../../core/api';
+import { useMusic } from '../../core/MusicContext';
 import { useToast } from '../../components/Toast';
 import { reloadCompanionSettings } from '../../core/companionClient';
 
 export default function SettingsView() {
   const { settings, updateSettings } = useSettings();
   const { username, serverUrl, logout, reconnect } = useAuth();
+  const { resetPlayback } = useMusic();
   const toast = useToast();
   const [navidromeUrl, setNavidromeUrl] = useState('');
   const [sonosProxyUrl, setSonosProxyUrl] = useState('');
@@ -50,9 +52,11 @@ export default function SettingsView() {
     if (navidromeUrl && navidromeUrl.trim() && navidromeUrl !== serverUrl) {
       const ok = await reconnect();
       if (ok) {
+        // Server changed — clear old track/queue that won't exist on the new backend
+        resetPlayback();
         toast.show(`Connected to ${navidromeUrl}`);
       } else {
-        toast.show('Could not connect — check URL and try logging out and back in');
+        toast.show('Could not connect — check URL or try logging out and back in');
       }
     }
     setTimeout(() => setSaved(false), 2000);
