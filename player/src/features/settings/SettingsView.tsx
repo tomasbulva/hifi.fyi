@@ -186,10 +186,22 @@ export default function SettingsView() {
                   style={{ transform: settings.autoplay ? 'translateX(24px)' : 'translateX(2px)' }} />
               </button>
             </div>
+            <div className="flex items-center justify-between py-3" style={{ borderTop: '1px solid rgba(255,255,255,0.04)' }}>
+              <div>
+                <span className="text-sm font-semibold" style={{ color: 'var(--color-text)' }}>Smart Playlists</span>
+                <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>Show Daily Mixes, Genre Mixes, and Artist Intros</p>
+              </div>
+              <button
+                onClick={() => updateSettings({ smartPlaylists: !settings.smartPlaylists })}
+                className="w-12 h-6 rounded-full border-none cursor-pointer transition-colors"
+                style={{ background: settings.smartPlaylists ? 'var(--color-primary)' : 'rgba(255,255,255,0.1)' }}
+              >
+                <div className="w-5 h-5 rounded-full bg-white transition-transform"
+                  style={{ transform: settings.smartPlaylists ? 'translateX(24px)' : 'translateX(2px)' }} />
+              </button>
+            </div>
           </div>
         </section>
-
-        {/* Smart Features section */}
         <section className="mb-8">
           <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider" style={{ color: 'var(--color-text-muted)' }}>
             Smart Features

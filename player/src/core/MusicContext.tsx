@@ -128,6 +128,20 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   const TRACK_STORAGE_KEY = 'hifi_last_track';
   const CODEC_STORAGE_KEY = 'hifi_codec_info';
 
+  // Listen for logout event — clear all playback state
+  useEffect(() => {
+    function handleLogout() {
+      engine.stop();
+      setQueue([]);
+      setQueueIndex(-1);
+      setPlayback({ isPlaying: false, currentTrack: null, progress: 0, duration: 0, buffered: 0, volume: 0.8, shuffle: false, repeat: 'off' });
+      setCodecInfo(null);
+      setStarredIds(new Set());
+    }
+    window.addEventListener('hifi:logout', handleLogout);
+    return () => window.removeEventListener('hifi:logout', handleLogout);
+  }, [engine]);
+
   // Restore queue on mount
   useEffect(() => {
     if (!settings.persistQueue) return;

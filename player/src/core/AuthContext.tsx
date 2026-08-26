@@ -111,6 +111,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.removeItem('hifi_queue');
     localStorage.removeItem('hifi_last_track');
     localStorage.removeItem('hifi_codec_info');
+    // Dispatch event so MusicContext can stop the engine and clear state
+    window.dispatchEvent(new Event('hifi:logout'));
     setState({ isLoggedIn: false, serverUrl: '', username: '', error: null });
   }, []);
 

@@ -13,6 +13,7 @@ import { formatTime, slugify } from '../../core/format';
 import { LOSSLESS_FORMATS } from '../../core/quality';
 import { getDailyMixes, getPlaylistCoverUrl, getGenres, getSmartPlaylist } from '../../core/companionClient';
 import { useCompanion } from '../../core/CompanionContext';
+import { useSettings } from '../../core/SettingsContext';
 
 type LibTab = 'albums' | 'artists' | 'playlists' | 'songs';
 
@@ -126,6 +127,8 @@ export default function LibraryView() {
   const navigate = useNavigate();
   const toast = useToast();
   const { enabled: companionEnabled } = useCompanion();
+  const { settings } = useSettings();
+  const showSmartPlaylists = companionEnabled && settings.smartPlaylists;
   const params = useParams();
   const currentTrack = playback.currentTrack;
 
@@ -431,7 +434,7 @@ export default function LibraryView() {
         </div>
 
         {/* Artist Intro — "This is ..." */}
-        {companionEnabled && (
+        {showSmartPlaylists && (
         <div className="mb-8 rounded-2xl overflow-hidden cursor-pointer hover:opacity-90 transition-opacity"
           style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)' }}
           onClick={() => navigate(`/smart/artist-intro/${artistId}`)}>
@@ -708,7 +711,7 @@ export default function LibraryView() {
           </div>
         )}
         {/* Event Playlists */}
-        {companionEnabled && (
+        {showSmartPlaylists && (
         <div className="mb-8">
           <h3 className="mb-3 text-[10px] font-bold uppercase tracking-widest" style={{ color: '#CBC3D7' }}>Mood & Moments</h3>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3 stagger-children">

@@ -41,12 +41,13 @@ export default function Login() {
     setLoading(true);
     try {
       // First: configure the server-side proxy to point at the Navidrome URL
+      // Also pass credentials so the companion scanner can use them
       if (serverUrl && serverUrl.trim()) {
         try {
           await fetch('/api/proxy-config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ navidromeUrl: serverUrl.trim() }),
+            body: JSON.stringify({ navidromeUrl: serverUrl.trim(), username, password }),
           });
         } catch { /* server might not be running in dev — Vite proxy handles it */ }
       }

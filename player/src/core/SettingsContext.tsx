@@ -8,6 +8,7 @@ interface Settings {
   companionUrl: string;
   companionApiKey: string;
   autoplay: boolean;
+  smartPlaylists: boolean;
 }
 
 interface SettingsContextValue {
@@ -25,6 +26,7 @@ const defaultSettings: Settings = {
   companionUrl: '',
   companionApiKey: '',
   autoplay: true,
+  smartPlaylists: true,
 };
 
 const SettingsContext = createContext<SettingsContextValue | null>(null);

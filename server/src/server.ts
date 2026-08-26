@@ -129,18 +129,28 @@ app.get('/api/proxy-config', (req, res) => {
 });
 
 app.post('/api/proxy-config', (req, res) => {
-  const { navidromeUrl } = req.body;
+  const { navidromeUrl, username: navidromeUser, password: navidromePass } = req.body;
   if (!navidromeUrl || typeof navidromeUrl !== 'string') {
     return res.status(400).json({ error: 'Missing navidromeUrl' });
   }
   const oldUrl = currentNavidromeUrl;
   currentNavidromeUrl = navidromeUrl.replace(/\/+$/, '');
   console.log(`[hifi] Navidrome proxy updated: ${oldUrl || '(none)'} → ${currentNavidromeUrl}/rest`);
-  // Reconfigure subsonic client + scanner if not already configured
-  if (!subsonicClient && currentNavidromeUrl && NAVIDROME_USER && NAVIDROME_PASSWORD) {
-    subsonicClient = new SubsonicClient(currentNavidromeUrl, NAVIDROME_USER, NAVIDROME_PASSWORD);
-    scanner = new Scanner(subsonicClient, db);
-    console.log('[hifi] Companion: Navidrome configured (runtime)');
+  // Reconfigure subsonic client + scanner with new URL and credentials
+  if (currentNavidromeUrl) {
+    const user = navidromeUser || NAVIDROME_USER;
+    const pass = navidromePass || NAVIDROME_PASSWORD;
+    if (user && pass) {
+      subsonicClient = new SubsonicClient(currentNavidromeUrl, user, pass);
+      scanner = new Scanner(subsonicClient, db);
+      console.log(`[hifi] Companion: reconfigured for ${currentNavidromeUrl} (user: ${user})`);
+      // Trigger a rescan since we're pointing at a new server
+      if (!scanner.isScanning) {
+        scanner.scan().catch(err => console.error('[hifi] Rescan failed:', err));
+      }
+    } else {
+      console.warn('[hifi] Companion: no credentials for reconfiguration');
+    }
   }
   res.json({ ok: true, navidromeUrl: currentNavidromeUrl });
 });
