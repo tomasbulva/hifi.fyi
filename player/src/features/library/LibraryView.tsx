@@ -126,7 +126,7 @@ export default function LibraryView() {
   } = useMusic();
   const navigate = useNavigate();
   const toast = useToast();
-  const { enabled: companionEnabled } = useCompanion();
+  const { enabled: companionEnabled, scanStatus } = useCompanion();
   const { settings } = useSettings();
   const showSmartPlaylists = companionEnabled && settings.smartPlaylists;
   const params = useParams();
@@ -136,7 +136,7 @@ export default function LibraryView() {
   const albumId = params.albumId || '';
   const artistId = params.artistId || '';
   const playlistId = params.playlistId || '';
-  const tab: LibTab = params.tab && VALID_TABS.includes(params.tab as LibTab) ? (params.tab as LibTab) : 'albums';
+  const tab: LibTab = params.tab && VALID_TABS.includes(params.tab as LibTab) ? (params.tab as LibTab) : 'playlists';
 
   const [filter, setFilter] = useState('all');
   const [dailyMixes, setDailyMixes] = useState<any[]>([]);
@@ -144,7 +144,7 @@ export default function LibraryView() {
 
   // Load daily mixes + genres when on playlists tab (only if companion is enabled)
   useEffect(() => {
-    if (!companionEnabled) {
+    if (!showSmartPlaylists) {
       setDailyMixes([]);
       setGenres([]);
       return;
@@ -156,7 +156,15 @@ export default function LibraryView() {
     getGenres().then(g => {
       setGenres(g);
     }).catch(() => setGenres([]));
-  }, [tab, albumId, artistId, playlistId, companionEnabled]);
+  }, [tab, albumId, artistId, playlistId, showSmartPlaylists]);
+
+  // Show toasts for scanning status
+  useEffect(() => {
+    if (!scanStatus) return;
+    if (scanStatus.scanning) {
+      toast.show(`Scanning library… ${scanStatus.progress}/${scanStatus.total_songs} songs`);
+    }
+  }, [scanStatus?.scanning, scanStatus?.progress, scanStatus?.total_songs]);
 
   // ── Infinite scroll sentry ──
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -690,7 +698,7 @@ export default function LibraryView() {
 
       {tab === 'playlists' && (() => (
         <>
-        {companionEnabled && dailyMixes.length > 0 && (
+        {showSmartPlaylists && dailyMixes.length > 0 && (
           <div className="mb-8">
             <h3 className="mb-3 text-[10px] font-bold uppercase tracking-widest" style={{ color: '#CBC3D7' }}>Daily Mixes</h3>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 stagger-children">
@@ -735,7 +743,7 @@ export default function LibraryView() {
         </div>
         )}
         {/* Genre Mixes */}
-        {companionEnabled && genres.length > 0 && (
+        {showSmartPlaylists && genres.length > 0 && (
           <div className="mb-8">
             <h3 className="mb-3 text-[10px] font-bold uppercase tracking-widest" style={{ color: '#CBC3D7' }}>Genre Mixes</h3>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 stagger-children">
