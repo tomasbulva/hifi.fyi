@@ -88,9 +88,15 @@ app.use((req, res, next) => {
 function authMiddleware(req: any, res: any, next: any) {
   if (!API_KEY) return next();
   // Skip auth for same-origin requests (frontend served by this server)
+  // Also skip for localhost/private-network requests (Vite dev, LAN access)
   const origin = req.headers.origin || req.headers.referer || '';
   const host = req.headers.host || '';
-  if (origin && (origin.includes(host) || origin.includes('localhost') || origin.includes('127.0.0.1'))) {
+  const ip = req.ip || req.socket.remoteAddress || '';
+  // Accept: origin/referer matches host, includes localhost, or is a private IP
+  const isLocal = origin && (origin.includes(host) || origin.includes('localhost') || origin.includes('127.0.0.1'));
+  const isPrivateIp = ip && (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || ip.startsWith('192.168.') || ip.startsWith('10.') || ip.startsWith('172.16.'));
+  // Also accept: no referer/origin but request is from private IP (same-origin fetch in built mode)
+  if (isLocal || isPrivateIp) {
     return next();
   }
   const provided = req.headers['x-api-key'] || req.query.api_key;

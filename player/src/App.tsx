@@ -28,6 +28,7 @@ function PlayerApp() {
   const { scanStatus } = useCompanion();
   const [scanBanner, setScanBanner] = useState<string | null>(null);
   const wasScanning = useRef(false);
+  const hasAnnouncedComplete = useRef(false);
 
   useKeyboardShortcuts();
   useMediaSession();
@@ -40,10 +41,17 @@ function PlayerApp() {
       const pct = Math.round((scanStatus.progress / total) * 100);
       setScanBanner(`Scanning library… ${pct}% (${scanStatus.progress}/${scanStatus.total_songs || '?'} songs)`);
       wasScanning.current = true;
-    } else if (wasScanning.current) {
+      hasAnnouncedComplete.current = false;
+    } else if (wasScanning.current && !hasAnnouncedComplete.current) {
+      // Scan just finished (we saw it in progress)
       setScanBanner(`Scan complete: ${scanStatus.total_songs || '?'} songs indexed`);
       wasScanning.current = false;
-      // Auto-dismiss after 5s
+      hasAnnouncedComplete.current = true;
+      setTimeout(() => setScanBanner(null), 5000);
+    } else if (!wasScanning.current && !hasAnnouncedComplete.current && scanStatus.total_songs > 0) {
+      // Scan completed before frontend loaded — show the result briefly
+      setScanBanner(`${scanStatus.total_songs} songs indexed ✨`);
+      hasAnnouncedComplete.current = true;
       setTimeout(() => setScanBanner(null), 5000);
     }
   }, [scanStatus?.scanning, scanStatus?.progress, scanStatus?.total_songs]);

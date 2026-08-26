@@ -37,34 +37,53 @@ export function CompanionProvider({ children }: { children: React.ReactNode }) {
   const [hotTrackIds, setHotTrackIds] = useState<Set<string>>(new Set());
   const [scanStatus, setScanStatus] = useState<CompanionContextValue['scanStatus']>(null);
 
-  // Re-check companion whenever settings change
-  useEffect(() => {
+  // Re-check companion whenever settings or auth change
+  // Settings change triggers dependency. For auth/login transitions,
+  // we rely on retry below since the provider mounts before login.
+  const checkAndInit = useCallback(async () => {
     reloadCompanionSettings();
     const url = getCompanionUrl();
-    if (!url) {
-      setEnabled(false);
-      return;
-    }
+    if (!url) return false;
+    const ok = await checkCompanionHealth();
+    return ok;
+  }, []);
 
-    let cancelled = false;
-    checkCompanionHealth().then(ok => {
-      if (cancelled) return;
-      setEnabled(ok);
+  useEffect(() => {
+    checkAndInit().then(ok => {
       if (ok) {
-        getHotTrackIds().then(ids => { if (!cancelled) setHotTrackIds(ids); });
-        getCompanionStatus().then(status => { if (!cancelled) setScanStatus(status); });
+        setEnabled(true);
+        getHotTrackIds().then(ids => setHotTrackIds(ids));
+        getCompanionStatus().then(status => setScanStatus(status));
+      } else {
+        setEnabled(false);
       }
     });
+  }, [settings.companionUrl, settings.companionApiKey, checkAndInit]);
 
-    return () => { cancelled = true; };
-  }, [settings.companionUrl, settings.companionApiKey]);
+  // Retry health check every 5s when not enabled — covers the case where
+  // CompanionProvider mounts before the server is ready (e.g. before login)
+  useEffect(() => {
+    if (enabled) return;
+    const retryTimer = setInterval(() => {
+      checkAndInit().then(ok => {
+        if (ok) {
+          setEnabled(true);
+          getHotTrackIds().then(ids => setHotTrackIds(ids));
+          getCompanionStatus().then(status => setScanStatus(status));
+        }
+      });
+    }, 5000);
+    return () => clearInterval(retryTimer);
+  }, [enabled, checkAndInit]);
 
   // Poll scan status while companion is enabled (separate from init to avoid race)
   useEffect(() => {
     if (!enabled) return;
     const pollInterval = setInterval(() => {
-      getCompanionStatus().then(status => { setScanStatus(status); }).catch(() => {});
+      getCompanionStatus().then(status => { if (status) setScanStatus(status); }).catch(() => {});
     }, 3000);
+    // Fetch immediately too (don't wait for first 3s interval)
+    getCompanionStatus().then(status => { if (status) setScanStatus(status); }).catch(() => {});
     return () => clearInterval(pollInterval);
   }, [enabled]);
 
