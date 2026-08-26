@@ -11,6 +11,7 @@ interface AuthState {
 interface AuthContextValue extends AuthState {
   login: (serverUrl: string, username: string, password: string) => Promise<boolean>;
   logout: () => void;
+  reconnect: () => Promise<boolean>;
 }
 
 const STORAGE_KEY = 'hifi_auth';
@@ -81,8 +82,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setState({ isLoggedIn: false, serverUrl: '', username: '', error: null });
   }, []);
 
+  const reconnect = useCallback(async (): Promise<boolean> => {
+    try {
+      const ok = await ping();
+      if (ok) {
+        setState(s => ({ ...s, error: null }));
+        return true;
+      } else {
+        setState(s => ({ ...s, error: 'Reconnection failed. Check your URL.' }));
+        return false;
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      setState(s => ({ ...s, error: msg }));
+      return false;
+    }
+  }, []);
+
   return (
-    <AuthContext.Provider value={{ ...state, login, logout }}>
+    <AuthContext.Provider value={{ ...state, login, logout, reconnect }}>
       {children}
     </AuthContext.Provider>
   );

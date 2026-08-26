@@ -11,7 +11,16 @@ let COMPANION_URL = '';
 let COMPANION_API_KEY = '';
 
 function resolveCompanionUrl(): string {
-  // Both dev and production use relative /api — Vite proxy (dev) or unified server (prod)
+  try {
+    const raw = localStorage.getItem('hifi_settings');
+    if (raw) {
+      const settings = JSON.parse(raw);
+      if (settings.companionUrl && settings.companionUrl.trim()) {
+        return settings.companionUrl.trim().replace(/\/+$/, '');
+      }
+    }
+  } catch {}
+  // Default: relative /api (unified server setup)
   return '/api';
 }
 

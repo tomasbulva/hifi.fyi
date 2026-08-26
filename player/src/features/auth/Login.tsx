@@ -3,14 +3,12 @@ import { useAuth } from '../../core/AuthContext';
 
 export default function Login() {
   const { login, error } = useAuth();
-  const [serverUrl] = useState('');
+  const [serverUrl, setServerUrl] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [banRemaining, setBanRemaining] = useState<number | null>(null);
   const [permaBanned, setPermaBanned] = useState(false);
-
-  const needsServerUrl = false;
 
   // Check ban status on mount + poll every second when banned
   useEffect(() => {
@@ -42,7 +40,7 @@ export default function Login() {
     if (banRemaining !== null || permaBanned) return;
     setLoading(true);
     try {
-      const success = await login(serverUrl || window.location.origin, username, password);
+      const success = await login(serverUrl, username, password);
       if (success) {
         // Clear server-side attempt counter
         fetch('/api/auth/success', { method: 'POST' }).catch(() => {});
@@ -155,6 +153,32 @@ export default function Login() {
           </div>
         ) : (
           <>
+            {/* Server URL */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium" style={{ color: 'var(--color-on-surface-variant)' }}>
+                Server URL
+              </label>
+              <div className="relative">
+                <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-xl"
+                      style={{ color: 'var(--color-on-surface-variant)', opacity: 0.6 }}>
+                  dns
+                </span>
+                <input
+                  type="url"
+                  value={serverUrl}
+                  onChange={e => setServerUrl(e.target.value)}
+                  className="w-full rounded-lg pl-10 pr-3 py-3 text-sm outline-none transition-colors"
+                  style={{
+                    background: 'var(--color-surface)',
+                    border: '1px solid rgba(255, 255, 255, 0.08)',
+                    color: 'var(--color-on-surface)',
+                  }}
+                  placeholder="https://music.example.com (leave empty for same-origin)"
+                  autoFocus
+                />
+              </div>
+            </div>
+
             {/* Username */}
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-medium" style={{ color: 'var(--color-on-surface-variant)' }}>
@@ -175,7 +199,6 @@ export default function Login() {
                     border: '1px solid rgba(255, 255, 255, 0.08)',
                     color: 'var(--color-on-surface)',
                   }}
-                  autoFocus={!needsServerUrl}
                   placeholder="Keith Richards"
                 />
               </div>

@@ -11,7 +11,7 @@ import { CachedCover } from '../../components/CachedCover';
 import { useToast } from '../../components/Toast';
 import { formatTime, slugify } from '../../core/format';
 import { LOSSLESS_FORMATS } from '../../core/quality';
-import { getDailyMixes, getPlaylistCoverUrl } from '../../core/companionClient';
+import { getDailyMixes, getPlaylistCoverUrl, getGenres, getSmartPlaylist } from '../../core/companionClient';
 
 type LibTab = 'albums' | 'artists' | 'playlists' | 'songs';
 
@@ -43,6 +43,16 @@ const HEADER_LABELS: Record<LibTab, string> = {
 
 const CARD = { background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' };
 const CARD_HDR = { background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)' };
+
+// Event playlists — mood/activity-based, generated from companion mood data
+const EVENT_PLAYLISTS = [
+  { id: 'easy-sunday', title: 'Easy Sunday', subtitle: 'Relaxed morning vibes', icon: 'wb_sunny', mood: 'chill' },
+  { id: 'family-dinner', title: 'Family Dinner', subtitle: 'Warm and comforting', icon: 'restaurant', mood: 'chill' },
+  { id: 'focus-session', title: 'Focus Session', subtitle: 'Deep concentration', icon: 'psychology', mood: 'focus' },
+  { id: 'late-night', title: 'Late Night', subtitle: 'Moody and atmospheric', icon: 'dark_mode', mood: 'dark' },
+  { id: 'workout', title: 'Workout', subtitle: 'High energy tracks', icon: 'fitness_center', mood: 'energetic' },
+  { id: 'road-trip', title: 'Road Trip', subtitle: 'Driving anthems', icon: 'directions_car', mood: 'energetic' },
+];
 
 function artistCoverUrl(artist: SubsonicArtist, getCoverUrl: (id: string | undefined) => string): string {
   return getCoverUrl(artist.coverArt || artist.artistImageUrl);
@@ -125,12 +135,16 @@ export default function LibraryView() {
 
   const [filter, setFilter] = useState('all');
   const [dailyMixes, setDailyMixes] = useState<any[]>([]);
+  const [genres, setGenres] = useState<{ genre: string; count: number }[]>([]);
 
   // Load daily mixes when on playlists tab (no detail view)
   useEffect(() => {
     if (tab !== 'playlists' || albumId || artistId || playlistId) return;
     getDailyMixes().then(mixes => {
       setDailyMixes(mixes);
+    });
+    getGenres().then(g => {
+      setGenres(g);
     });
   }, [tab, albumId, artistId, playlistId]);
 
@@ -409,6 +423,23 @@ export default function LibraryView() {
           </div>
         </div>
 
+        {/* Artist Intro — “This is ...” */}
+        <div className="mb-8 rounded-2xl overflow-hidden cursor-pointer hover:opacity-90 transition-opacity"
+          style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)' }}
+          onClick={() => navigate(`/smart/artist-intro/${artistId}`)}>
+          <div className="flex items-center gap-4 p-5">
+            <div className="w-16 h-16 rounded-xl overflow-hidden flex-shrink-0">
+              <CachedCover url={artistCoverUrl(artist, getCoverUrl)} alt={artist.name} className="w-full h-full object-cover" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <span className="text-[9px] font-bold uppercase tracking-widest block mb-1" style={{ color: '#D0BCFF' }}>Artist Intro</span>
+              <h2 className="text-lg font-extrabold truncate" style={{ color: '#E5E2E1' }}>This is {artist.name}</h2>
+              <p className="text-xs mt-0.5" style={{ color: '#CBC3D7' }}>Top tracks and discovery</p>
+            </div>
+            <span className="material-symbols-outlined text-2xl" style={{ color: '#CBC3D7' }}>chevron_right</span>
+          </div>
+        </div>
+
         {/* Popular tracks — top 5 */}
         {artistAlbums.length > 0 && (() => {
           const topSongs = artistAlbums.flatMap(a => (a as any).song ?? []).slice(0, 5);
@@ -653,7 +684,7 @@ export default function LibraryView() {
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 stagger-children">
               {dailyMixes.map(mix => (
                 <div key={mix.id} className="group cursor-pointer rounded-lg p-2 transition-all hover:bg-white/[0.03]"
-                  onClick={() => navigate(`/library/playlists/daily-${mix.id}/${mix.id}`)}>
+                  onClick={() => navigate(`/smart/daily-mix/${mix.id}`)}>
                   <div className="relative overflow-hidden rounded-lg mb-2 aspect-square">
                     <img src={getPlaylistCoverUrl(mix.id)} alt={mix.title} className="w-full h-full object-cover transition-transform group-hover:scale-105" />
                     <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
@@ -662,6 +693,48 @@ export default function LibraryView() {
                   </div>
                   <h3 className="text-sm font-semibold truncate" style={{ color: '#E5E2E1' }}>{mix.title}</h3>
                   <p className="text-xs mt-0.5 truncate" style={{ color: '#CBC3D7' }}>{mix.subtitle}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {/* Event Playlists */}
+        <div className="mb-8">
+          <h3 className="mb-3 text-[10px] font-bold uppercase tracking-widest" style={{ color: '#CBC3D7' }}>Mood & Moments</h3>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3 stagger-children">
+            {EVENT_PLAYLISTS.map(card => (
+              <div key={card.id} className="group cursor-pointer rounded-lg p-2 transition-all hover:bg-white/[0.03]"
+                onClick={() => {
+                  getSmartPlaylist({ mood: card.mood, limit: 50 }).then(songs => {
+                    if (songs.length > 0) { replaceQueue(songs); navigate('/player'); }
+                  });
+                }}>
+                <div className="relative overflow-hidden rounded-lg mb-2 aspect-square flex items-center justify-center"
+                  style={{ background: 'rgba(255,255,255,0.03)' }}>
+                  <span className="material-symbols-outlined text-4xl" style={{ color: '#D0BCFF' }}>{card.icon}</span>
+                </div>
+                <h3 className="text-sm font-semibold truncate" style={{ color: '#E5E2E1' }}>{card.title}</h3>
+                <p className="text-xs mt-0.5 truncate" style={{ color: '#CBC3D7' }}>{card.subtitle}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+        {/* Genre Mixes */}
+        {genres.length > 0 && (
+          <div className="mb-8">
+            <h3 className="mb-3 text-[10px] font-bold uppercase tracking-widest" style={{ color: '#CBC3D7' }}>Genre Mixes</h3>
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 stagger-children">
+              {genres.slice(0, 10).map(g => (
+                <div key={g.genre} className="group cursor-pointer rounded-lg p-2 transition-all hover:bg-white/[0.03]"
+                  onClick={() => navigate(`/smart/genre-mix/${encodeURIComponent(g.genre)}`)}>
+                  <div className="relative overflow-hidden rounded-lg mb-2 aspect-square">
+                    <img src={getPlaylistCoverUrl(`genre-${g.genre}`)} alt={g.genre} className="w-full h-full object-cover transition-transform group-hover:scale-105" />
+                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                      <span className="material-symbols-outlined text-3xl" style={{ color: '#E5E2E1', fontVariationSettings: "'FILL' 1" }}>play_arrow</span>
+                    </div>
+                  </div>
+                  <h3 className="text-sm font-semibold truncate" style={{ color: '#E5E2E1' }}>{g.genre}</h3>
+                  <p className="text-xs mt-0.5 truncate" style={{ color: '#CBC3D7' }}>{g.count} tracks</p>
                 </div>
               ))}
             </div>

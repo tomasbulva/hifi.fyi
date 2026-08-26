@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { useSettings } from '../../core/SettingsContext';
 import { useAuth } from '../../core/AuthContext';
 import { reloadProxyUrl, getProxyUrl } from '../../core/sonosProvider';
+import { reconfigureFromSettings } from '../../core/api';
+import { reloadCompanionSettings } from '../../core/companionClient';
 
 export default function SettingsView() {
   const { settings, updateSettings } = useSettings();
@@ -27,6 +29,10 @@ export default function SettingsView() {
   function handleSave() {
     updateSettings({ navidromeUrl, sonosProxyUrl, sonosProxyApiKey, persistQueue, companionUrl, companionApiKey });
     reloadProxyUrl();
+    // Reconfigure API client with new Navidrome URL
+    reconfigureFromSettings(navidromeUrl);
+    // Reload companion settings
+    reloadCompanionSettings();
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }

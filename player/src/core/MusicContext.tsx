@@ -312,8 +312,23 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
             if (settings.autoplay && playback.currentTrack) {
               getNextRecommendation(playback.currentTrack.id).then(song => {
                 if (song) {
-                  addToQueue(song);
-                  playFromQueueIndex(queueIndex + 1);
+                  // Add directly to queue and play — bypass addToQueue to avoid race condition
+                  const newItem = { song, queuedAt: Date.now() };
+                  setQueue(prev => [...prev, newItem]);
+                  // Use setTimeout to let state update settle, then play
+                  setTimeout(() => {
+                    const newIdx = queue.length; // new song is at end of old queue
+                    // playFromQueueIndex reads from queue state, but setQueue is async
+                    // So we call engine.play directly and update state
+                    if (!isCasting()) {
+                      engine.play(song);
+                      setCodecInfo(engine.getCodecInfo());
+                    } else {
+                      castStreamUrl(song);
+                    }
+                    setQueueIndex(newIdx);
+                    setPlayback(prev => ({ ...prev, currentTrack: song, isPlaying: true }));
+                  }, 0);
                 } else {
                   setPlayback(prev => ({ ...prev, isPlaying: false }));
                 }

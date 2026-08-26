@@ -23,14 +23,36 @@ let password = '';
 // ---- config ----
 
 export function configure(_serverUrl: string, user: string, pass: string) {
-  // Both dev and production use relative /rest — the Vite dev proxy (dev)
-  // or the unified server (production) handles routing to Navidrome.
-  baseUrl = '/rest';
+  // If serverUrl is provided and not empty, use it directly (for cross-origin connections)
+  // If empty, use relative /rest (for unified server setup where /rest is proxied)
+  if (_serverUrl && _serverUrl.trim()) {
+    // Normalize: remove trailing slash, ensure no double /rest
+    let url = _serverUrl.trim().replace(/\/+$/, '');
+    // If the URL already ends with /rest, don't add it again
+    if (!url.endsWith('/rest')) {
+      url = url + '/rest';
+    }
+    baseUrl = url;
+  } else {
+    baseUrl = '/rest';
+  }
   username = user;
   password = pass;
   // Reset cover art auth so new credentials get a fresh stable token
   _coverSalt = null;
   _coverToken = null;
+}
+
+/** Reconfigure API from saved settings — used when settings change without full login */
+export function reconfigureFromSettings(serverUrl: string) {
+  const raw = sessionStorage.getItem('hifi_auth');
+  if (!raw) return;
+  try {
+    const { username, password } = JSON.parse(raw);
+    if (username && password) {
+      configure(serverUrl, username, password);
+    }
+  } catch {}
 }
 
 function generateSalt(): string {

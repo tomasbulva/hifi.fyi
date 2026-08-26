@@ -12,6 +12,7 @@ import LibraryView from './features/library/LibraryView';
 import SettingsView from './features/settings/SettingsView';
 import SearchView from './features/search/SearchView';
 import FavoritesView from './features/favorites/FavoritesView';
+import SmartPlaylistView from './features/playlists/SmartPlaylistView';
 import Sidebar from './components/Sidebar';
 import MobileBottomNav from './components/MobileBottomNav';
 import MiniPlayer from './components/MiniPlayer';
@@ -46,6 +47,7 @@ function PlayerApp() {
             <Route path="/library/albums/:albumSlug/:albumId" element={<LibraryView />} />
             <Route path="/library/artists/:artistSlug/:artistId" element={<LibraryView />} />
             <Route path="/library/playlists/:playlistSlug/:playlistId" element={<LibraryView />} />
+            <Route path="/smart/:kind/:id" element={<SmartPlaylistView />} />
             <Route path="/library/:tab" element={<LibraryView />} />
             <Route path="/library" element={<LibraryView />} />
             <Route path="/search" element={<SearchView />} />
