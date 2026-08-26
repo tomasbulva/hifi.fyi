@@ -1,9 +1,10 @@
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
 import { AuthProvider, useAuth } from './core/AuthContext';
 import { MusicProvider } from './core/MusicContext';
 import { CastProvider } from './core/CastContext';
 import { SettingsProvider } from './core/SettingsContext';
-import { CompanionProvider } from './core/CompanionContext';
+import { CompanionProvider, useCompanion } from './core/CompanionContext';
 import { SkinProvider } from './core/SkinContext';
 
 import Login from './features/auth/Login';
@@ -24,9 +25,28 @@ import { useMediaSession } from './hooks/useMediaSession';
 function PlayerApp() {
   const { isLoggedIn } = useAuth();
   const location = useLocation();
+  const { scanStatus } = useCompanion();
+  const [scanBanner, setScanBanner] = useState<string | null>(null);
+  const wasScanning = useRef(false);
 
   useKeyboardShortcuts();
   useMediaSession();
+
+  // Global scan status banner — visible on every page, not just Library
+  useEffect(() => {
+    if (!scanStatus) return;
+    if (scanStatus.scanning) {
+      const total = scanStatus.total_songs || 1;
+      const pct = Math.round((scanStatus.progress / total) * 100);
+      setScanBanner(`Scanning library… ${pct}% (${scanStatus.progress}/${scanStatus.total_songs || '?'} songs)`);
+      wasScanning.current = true;
+    } else if (wasScanning.current) {
+      setScanBanner(`Scan complete: ${scanStatus.total_songs || '?'} songs indexed`);
+      wasScanning.current = false;
+      // Auto-dismiss after 5s
+      setTimeout(() => setScanBanner(null), 5000);
+    }
+  }, [scanStatus?.scanning, scanStatus?.progress, scanStatus?.total_songs]);
 
   if (!isLoggedIn) return <Login />;
 
@@ -38,6 +58,14 @@ function PlayerApp() {
       <MobileBottomNav />
 
       {showMiniPlayer && <MiniPlayer />}
+
+      {/* Global scan status banner */}
+      {scanBanner && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full text-xs font-bold shadow-lg animate-in"
+          style={{ background: 'rgba(208,188,255,0.95)', color: '#1A0A2E' }}>
+          {scanBanner}
+        </div>
+      )}
 
       <main className="md:ml-64 pb-32 md:pb-20 min-h-screen">
         <ErrorBoundary>

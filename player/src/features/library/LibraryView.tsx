@@ -126,7 +126,7 @@ export default function LibraryView() {
   } = useMusic();
   const navigate = useNavigate();
   const toast = useToast();
-  const { enabled: companionEnabled, scanStatus } = useCompanion();
+  const { enabled: companionEnabled } = useCompanion();
   const { settings } = useSettings();
   const showSmartPlaylists = companionEnabled && settings.smartPlaylists;
   const params = useParams();
@@ -156,28 +156,7 @@ export default function LibraryView() {
     getGenres().then(g => {
       setGenres(g);
     }).catch(() => setGenres([]));
-  }, [tab, albumId, artistId, playlistId, showSmartPlaylists, scanStatus?.scanning, scanStatus?.progress, scanStatus?.total_songs]);
-
-  // Show toasts for scanning status (only on state transitions, not every poll)
-  const wasScanning = useRef(false);
-  useEffect(() => {
-    if (!scanStatus) return;
-    if (scanStatus.scanning && !wasScanning.current) {
-      // Scanning just started
-      toast.show(`Scanning library… ${scanStatus.total_songs ? `${scanStatus.progress}/${scanStatus.total_songs}` : 'starting'} songs`);
-      wasScanning.current = true;
-    } else if (!scanStatus.scanning && wasScanning.current) {
-      // Scanning just finished
-      toast.show(`Scan complete: ${scanStatus.total_songs} songs indexed`);
-      wasScanning.current = false;
-    } else if (scanStatus.scanning && scanStatus.progress > 0) {
-      // Still scanning — update progress toast occasionally (every ~50 songs)
-      if (scanStatus.progress % 50 === 0 || scanStatus.progress >= (scanStatus.total_songs || Infinity)) {
-        toast.show(`Scanning… ${Math.round((scanStatus.progress / (scanStatus.total_songs || 1)) * 100)}% (${scanStatus.progress}/${scanStatus.total_songs})`);
-      }
-    }
-  }, [scanStatus?.scanning, scanStatus?.progress, scanStatus?.total_songs]);
-
+  }, [tab, albumId, artistId, playlistId, showSmartPlaylists]);
   // ── Infinite scroll sentry ──
   const sentinelRef = useRef<HTMLDivElement>(null);
   const loadMoreRef = useRef<(() => void) | null>(null);
