@@ -23,19 +23,12 @@ let password = '';
 // ---- config ----
 
 export function configure(_serverUrl: string, user: string, pass: string) {
-  // If serverUrl is provided and not empty, use it directly (for cross-origin connections)
-  // If empty, use relative /rest (for unified server setup where /rest is proxied)
-  if (_serverUrl && _serverUrl.trim()) {
-    // Normalize: remove trailing slash, ensure no double /rest
-    let url = _serverUrl.trim().replace(/\/+$/, '');
-    // If the URL already ends with /rest, don't add it again
-    if (!url.endsWith('/rest')) {
-      url = url + '/rest';
-    }
-    baseUrl = url;
-  } else {
-    baseUrl = '/rest';
-  }
+  // Always use relative /rest — the browser must stay same-origin to avoid CORS.
+  // The server-side proxy (unified server or Vite dev proxy) handles routing
+  // to Navidrome. The proxy target is configured via:
+  //   - Production: NAVIDROME_URL env var on the unified server
+  //   - Dev: VITE_NAVIDROME_URL env var, or runtime config via /api/proxy-config
+  baseUrl = '/rest';
   username = user;
   password = pass;
   // Reset cover art auth so new credentials get a fresh stable token

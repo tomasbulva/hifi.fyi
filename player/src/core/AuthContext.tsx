@@ -33,25 +33,53 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Try auto-login on mount — check if we have a saved password in this session
   useEffect(() => {
+    let cancelled = false;
     try {
       const raw = sessionStorage.getItem(STORAGE_KEY);
       if (!raw) return;
       const { serverUrl, username, password } = JSON.parse(raw);
       if (!password) return;
       cachedPassword = password;
-      configureApi(serverUrl, username, cachedPassword);
-      ping().then(ok => {
-        if (ok) {
-          setState({ isLoggedIn: true, serverUrl, username, error: null });
-        } else {
+      // First: ensure server-side proxy points at the right Navidrome URL
+      if (serverUrl && serverUrl.trim()) {
+        fetch('/api/proxy-config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ navidromeUrl: serverUrl.trim() }),
+        }).catch(() => {}).finally(() => {
+          if (cancelled) return;
+          configureApi(serverUrl, username, cachedPassword);
+          ping().then(ok => {
+            if (cancelled) return;
+            if (ok) {
+              setState({ isLoggedIn: true, serverUrl, username, error: null });
+            } else {
+              cachedPassword = '';
+              sessionStorage.removeItem(STORAGE_KEY);
+            }
+          }).catch(() => {
+            cachedPassword = '';
+            sessionStorage.removeItem(STORAGE_KEY);
+          });
+        });
+      } else {
+        // No server URL — use relative /rest (unified server)
+        configureApi('', username, cachedPassword);
+        ping().then(ok => {
+          if (cancelled) return;
+          if (ok) {
+            setState({ isLoggedIn: true, serverUrl: '', username, error: null });
+          } else {
+            cachedPassword = '';
+            sessionStorage.removeItem(STORAGE_KEY);
+          }
+        }).catch(() => {
           cachedPassword = '';
           sessionStorage.removeItem(STORAGE_KEY);
-        }
-      }).catch(() => {
-        cachedPassword = '';
-        sessionStorage.removeItem(STORAGE_KEY);
-      });
+        });
+      }
     } catch { /* no saved creds */ }
+    return () => { cancelled = true; };
   }, []);
 
   const login = useCallback(async (serverUrl: string, username: string, password: string): Promise<boolean> => {

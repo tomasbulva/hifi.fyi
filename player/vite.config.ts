@@ -9,16 +9,16 @@ export default defineConfig(({ mode }) => {
 
   // In dev, proxy /rest directly to Navidrome (bypass Express — faster, no 502s)
   // /api goes to the Express server (companion + Sonos)
-  const navidromeUrl = env.VITE_NAVIDROME_URL || 'http://localhost:4321'
   const hifiServer = env.VITE_HIFI_SERVER || 'http://localhost:4321'
 
   return {
     plugins: [react(), tailwindcss()],
     server: {
       proxy: {
-        // Proxy /rest directly to Navidrome — avoids needing Express running for login
+        // Proxy /rest through the hifi server (which dynamically proxies to Navidrome)
+        // This allows runtime reconfiguration of the Navidrome URL via /api/proxy-config
         '/rest': {
-          target: navidromeUrl,
+          target: hifiServer,
           changeOrigin: true,
         },
         // /api (companion, Sonos) goes through the Express server

@@ -3,11 +3,13 @@ import { useSettings } from '../../core/SettingsContext';
 import { useAuth } from '../../core/AuthContext';
 import { reloadProxyUrl, getProxyUrl } from '../../core/sonosProvider';
 import { reconfigureFromSettings } from '../../core/api';
+import { useToast } from '../../components/Toast';
 import { reloadCompanionSettings } from '../../core/companionClient';
 
 export default function SettingsView() {
   const { settings, updateSettings } = useSettings();
-  const { username, serverUrl, logout } = useAuth();
+  const { username, serverUrl, logout, reconnect } = useAuth();
+  const toast = useToast();
   const [navidromeUrl, setNavidromeUrl] = useState('');
   const [sonosProxyUrl, setSonosProxyUrl] = useState('');
   const [sonosProxyApiKey, setSonosProxyApiKey] = useState('');
@@ -26,14 +28,33 @@ export default function SettingsView() {
     setCompanionApiKey(settings.companionApiKey || '');
   }, [settings, serverUrl]);
 
-  function handleSave() {
+  async function handleSave() {
     updateSettings({ navidromeUrl, sonosProxyUrl, sonosProxyApiKey, persistQueue, companionUrl, companionApiKey });
     reloadProxyUrl();
+    // Update the server-side proxy target so /rest routes to the new Navidrome URL
+    if (navidromeUrl && navidromeUrl.trim()) {
+      try {
+        await fetch('/api/proxy-config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ navidromeUrl: navidromeUrl.trim() }),
+        });
+      } catch { /* server might not be running */ }
+    }
     // Reconfigure API client with new Navidrome URL
     reconfigureFromSettings(navidromeUrl);
     // Reload companion settings
     reloadCompanionSettings();
     setSaved(true);
+    // Verify the new connection works
+    if (navidromeUrl && navidromeUrl.trim() && navidromeUrl !== serverUrl) {
+      const ok = await reconnect();
+      if (ok) {
+        toast.show(`Connected to ${navidromeUrl}`);
+      } else {
+        toast.show('Could not connect — check URL and try logging out and back in');
+      }
+    }
     setTimeout(() => setSaved(false), 2000);
   }
 

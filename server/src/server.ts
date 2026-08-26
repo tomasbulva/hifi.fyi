@@ -103,19 +103,47 @@ function authMiddleware(req: any, res: any, next: any) {
 // ── Navidrome proxy ──
 // All /rest/* requests are proxied to Navidrome. This means the frontend
 // never talks to Navidrome directly — no CORS issues, ever.
+// The proxy target is dynamic — can be changed at runtime via /api/proxy-config
 
-if (NAVIDROME_URL) {
-  // pathFilter preserves the /rest prefix when forwarding to Navidrome.
-  // (app.use('/rest', ...) would strip it, causing 404s.)
+let currentNavidromeUrl = NAVIDROME_URL;
+
+function navidromeRouter() {
+  return currentNavidromeUrl || undefined;
+}
+
+if (currentNavidromeUrl) {
   app.use(createProxyMiddleware({
-    target: NAVIDROME_URL,
+    target: currentNavidromeUrl,
     changeOrigin: true,
     pathFilter: '/rest',
+    router: navidromeRouter,
   }));
-  console.log(`[hifi] Navidrome proxy: /rest → ${NAVIDROME_URL}/rest`);
+  console.log(`[hifi] Navidrome proxy: /rest → ${currentNavidromeUrl}/rest`);
 } else {
-  console.warn('[hifi] NAVIDROME_URL not set — /rest proxy disabled');
+  console.warn('[hifi] NAVIDROME_URL not set — /rest proxy disabled (configure via /api/proxy-config)');
 }
+
+// Runtime proxy config — get/set the Navidrome URL from the frontend
+app.get('/api/proxy-config', (req, res) => {
+  res.json({ navidromeUrl: currentNavidromeUrl });
+});
+
+app.post('/api/proxy-config', (req, res) => {
+  const { navidromeUrl } = req.body;
+  if (!navidromeUrl || typeof navidromeUrl !== 'string') {
+    return res.status(400).json({ error: 'Missing navidromeUrl' });
+  }
+  const oldUrl = currentNavidromeUrl;
+  currentNavidromeUrl = navidromeUrl.replace(/\/+$/, '');
+  console.log(`[hifi] Navidrome proxy updated: ${oldUrl || '(none)'} → ${currentNavidromeUrl}/rest`);
+  // Reconfigure subsonic client + scanner if not already configured
+  if (!subsonicClient && currentNavidromeUrl && NAVIDROME_USER && NAVIDROME_PASSWORD) {
+    subsonicClient = new SubsonicClient(currentNavidromeUrl, NAVIDROME_USER, NAVIDROME_PASSWORD);
+    scanner = new Scanner(subsonicClient, db);
+    console.log('[hifi] Companion: Navidrome configured (runtime)');
+  }
+  res.json({ ok: true, navidromeUrl: currentNavidromeUrl });
+});
 
 // ── Companion init ──
 
