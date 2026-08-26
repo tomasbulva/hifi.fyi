@@ -47,16 +47,24 @@ export function CompanionProvider({ children }: { children: React.ReactNode }) {
     }
 
     let cancelled = false;
+    let pollInterval: ReturnType<typeof setInterval>;
+
     checkCompanionHealth().then(ok => {
       if (cancelled) return;
       setEnabled(ok);
       if (ok) {
         getHotTrackIds().then(ids => { if (!cancelled) setHotTrackIds(ids); });
         getCompanionStatus().then(status => { if (!cancelled) setScanStatus(status); });
+        // Poll scan status every 3s so the UI stays current
+        pollInterval = setInterval(() => {
+          getCompanionStatus().then(status => {
+            if (!cancelled) setScanStatus(status);
+          }).catch(() => {});
+        }, 3000);
       }
     });
 
-    return () => { cancelled = true; };
+    return () => { cancelled = true; clearInterval(pollInterval); };
   }, [settings.companionUrl, settings.companionApiKey]);
 
   const refreshHotTracks = useCallback(async () => {
