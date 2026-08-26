@@ -12,6 +12,7 @@ import { useToast } from '../../components/Toast';
 import { formatTime, slugify } from '../../core/format';
 import { LOSSLESS_FORMATS } from '../../core/quality';
 import { getDailyMixes, getPlaylistCoverUrl, getGenres, getSmartPlaylist } from '../../core/companionClient';
+import { useCompanion } from '../../core/CompanionContext';
 
 type LibTab = 'albums' | 'artists' | 'playlists' | 'songs';
 
@@ -124,6 +125,7 @@ export default function LibraryView() {
   } = useMusic();
   const navigate = useNavigate();
   const toast = useToast();
+  const { enabled: companionEnabled } = useCompanion();
   const params = useParams();
   const currentTrack = playback.currentTrack;
 
@@ -137,16 +139,21 @@ export default function LibraryView() {
   const [dailyMixes, setDailyMixes] = useState<any[]>([]);
   const [genres, setGenres] = useState<{ genre: string; count: number }[]>([]);
 
-  // Load daily mixes when on playlists tab (no detail view)
+  // Load daily mixes + genres when on playlists tab (only if companion is enabled)
   useEffect(() => {
+    if (!companionEnabled) {
+      setDailyMixes([]);
+      setGenres([]);
+      return;
+    }
     if (tab !== 'playlists' || albumId || artistId || playlistId) return;
     getDailyMixes().then(mixes => {
       setDailyMixes(mixes);
-    });
+    }).catch(() => setDailyMixes([]));
     getGenres().then(g => {
       setGenres(g);
-    });
-  }, [tab, albumId, artistId, playlistId]);
+    }).catch(() => setGenres([]));
+  }, [tab, albumId, artistId, playlistId, companionEnabled]);
 
   // ── Infinite scroll sentry ──
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -423,7 +430,8 @@ export default function LibraryView() {
           </div>
         </div>
 
-        {/* Artist Intro — “This is ...” */}
+        {/* Artist Intro — "This is ..." */}
+        {companionEnabled && (
         <div className="mb-8 rounded-2xl overflow-hidden cursor-pointer hover:opacity-90 transition-opacity"
           style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)' }}
           onClick={() => navigate(`/smart/artist-intro/${artistId}`)}>
@@ -439,6 +447,7 @@ export default function LibraryView() {
             <span className="material-symbols-outlined text-2xl" style={{ color: '#CBC3D7' }}>chevron_right</span>
           </div>
         </div>
+        )}
 
         {/* Popular tracks — top 5 */}
         {artistAlbums.length > 0 && (() => {
@@ -678,7 +687,7 @@ export default function LibraryView() {
 
       {tab === 'playlists' && (() => (
         <>
-        {dailyMixes.length > 0 && (
+        {companionEnabled && dailyMixes.length > 0 && (
           <div className="mb-8">
             <h3 className="mb-3 text-[10px] font-bold uppercase tracking-widest" style={{ color: '#CBC3D7' }}>Daily Mixes</h3>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 stagger-children">
@@ -699,6 +708,7 @@ export default function LibraryView() {
           </div>
         )}
         {/* Event Playlists */}
+        {companionEnabled && (
         <div className="mb-8">
           <h3 className="mb-3 text-[10px] font-bold uppercase tracking-widest" style={{ color: '#CBC3D7' }}>Mood & Moments</h3>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3 stagger-children">
@@ -707,7 +717,8 @@ export default function LibraryView() {
                 onClick={() => {
                   getSmartPlaylist({ mood: card.mood, limit: 50 }).then(songs => {
                     if (songs.length > 0) { replaceQueue(songs); navigate('/player'); }
-                  });
+                    else { toast.show('No tracks found — try running a library scan in Settings'); }
+                  }).catch(() => toast.show('Failed to generate playlist'));
                 }}>
                 <div className="relative overflow-hidden rounded-lg mb-2 aspect-square flex items-center justify-center"
                   style={{ background: 'rgba(255,255,255,0.03)' }}>
@@ -719,8 +730,9 @@ export default function LibraryView() {
             ))}
           </div>
         </div>
+        )}
         {/* Genre Mixes */}
-        {genres.length > 0 && (
+        {companionEnabled && genres.length > 0 && (
           <div className="mb-8">
             <h3 className="mb-3 text-[10px] font-bold uppercase tracking-widest" style={{ color: '#CBC3D7' }}>Genre Mixes</h3>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 stagger-children">
