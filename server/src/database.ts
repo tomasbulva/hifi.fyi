@@ -183,7 +183,12 @@ export class CompanionDB {
   }
 
   getGenres(): { genre: string; count: number }[] {
-    return this.db.prepare('SELECT genre, COUNT(*) as count FROM songs WHERE genre IS NOT NULL AND genre != "" GROUP BY genre ORDER BY count DESC').all() as { genre: string; count: number }[];
+    return this.db.prepare("SELECT genre, COUNT(*) as count FROM songs WHERE genre IS NOT NULL AND genre != '' GROUP BY genre ORDER BY count DESC").all() as { genre: string; count: number }[];
+  }
+
+  /** Clear cached daily mixes so they regenerate fresh (call after a scan completes). */
+  invalidateDailyMixes(): void {
+    this.db.prepare('DELETE FROM daily_mixes').run();
   }
 
   getDailyMixes(): { id: string; title: string; subtitle: string; icon: string; song_ids: string; generated_at: string; expires_at: string }[] {

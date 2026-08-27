@@ -126,7 +126,7 @@ export default function LibraryView() {
   } = useMusic();
   const navigate = useNavigate();
   const toast = useToast();
-  const { enabled: companionEnabled } = useCompanion();
+  const { enabled: companionEnabled, scanStatus } = useCompanion();
   const { settings } = useSettings();
   const showSmartPlaylists = companionEnabled && settings.smartPlaylists;
   const params = useParams();
@@ -143,6 +143,9 @@ export default function LibraryView() {
   const [genres, setGenres] = useState<{ genre: string; count: number }[]>([]);
 
   // Load daily mixes + genres when on playlists tab (only if companion is enabled)
+  // Re-fetch when the scan finishes (scanning flips true→false) so mixes/genres
+  // reflect the freshly-scanned library.
+  const scanning = scanStatus?.scanning;
   useEffect(() => {
     if (!showSmartPlaylists) {
       setDailyMixes([]);
@@ -156,7 +159,7 @@ export default function LibraryView() {
     getGenres().then(g => {
       setGenres(g);
     }).catch(() => setGenres([]));
-  }, [tab, albumId, artistId, playlistId, showSmartPlaylists]);
+  }, [tab, albumId, artistId, playlistId, showSmartPlaylists, scanning]);
   // ── Infinite scroll sentry ──
   const sentinelRef = useRef<HTMLDivElement>(null);
   const loadMoreRef = useRef<(() => void) | null>(null);

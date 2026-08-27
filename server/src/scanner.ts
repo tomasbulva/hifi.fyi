@@ -27,6 +27,9 @@ export class Scanner {
     this.scanning = true;
 
     try {
+      // Mark scanning=true in the DB immediately so the UI knows a scan is running
+      this.db.updateScanStatus(true, 0, 0);
+
       // Fetch all albums using multiple sort types to catch everything
       const seenAlbumIds = new Set<string>();
       const allAlbums: { id: string }[] = [];
@@ -72,8 +75,15 @@ export class Scanner {
       }
 
       this.db.updateScanStatus(false, 100, totalSongs);
+      // Invalidate cached daily mixes so they regenerate with the freshly-scanned library
+      this.db.invalidateDailyMixes();
       console.log(`[scanner] Done: ${totalSongs} songs from ${allAlbums.length} albums`);
       return { totalSongs, totalAlbums: allAlbums.length };
+    } catch (err) {
+      // Reset scan status so a failed scan (e.g. wrong credentials) doesn't leave
+      // the DB stuck in "scanning=true" forever
+      this.db.updateScanStatus(false, 0, 0);
+      throw err;
     } finally {
       this.scanning = false;
     }
