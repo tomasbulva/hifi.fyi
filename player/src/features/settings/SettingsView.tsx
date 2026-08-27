@@ -2,63 +2,28 @@ import { useState, useEffect } from 'react';
 import { useSettings } from '../../core/SettingsContext';
 import { useAuth } from '../../core/AuthContext';
 import { reloadProxyUrl, getProxyUrl } from '../../core/sonosProvider';
-import { reconfigureFromSettings } from '../../core/api';
-import { useMusic } from '../../core/MusicContext';
 import { useToast } from '../../components/Toast';
-import { reloadCompanionSettings } from '../../core/companionClient';
 
 export default function SettingsView() {
   const { settings, updateSettings } = useSettings();
-  const { username, serverUrl, logout, reconnect } = useAuth();
-  const { resetPlayback } = useMusic();
+  const { username, logout } = useAuth();
   const toast = useToast();
-  const [navidromeUrl, setNavidromeUrl] = useState('');
   const [sonosProxyUrl, setSonosProxyUrl] = useState('');
   const [sonosProxyApiKey, setSonosProxyApiKey] = useState('');
   const [persistQueue, setPersistQueue] = useState(true);
-  const [companionUrl, setCompanionUrl] = useState('');
-  const [companionApiKey, setCompanionApiKey] = useState('');
   const [saved, setSaved] = useState(false);
 
-  // Load current values
   useEffect(() => {
-    setNavidromeUrl(settings.navidromeUrl || serverUrl || '');
     setSonosProxyUrl(settings.sonosProxyUrl || getProxyUrl());
     setSonosProxyApiKey(settings.sonosProxyApiKey || '');
     setPersistQueue(settings.persistQueue !== false);
-    setCompanionUrl(settings.companionUrl || '');
-    setCompanionApiKey(settings.companionApiKey || '');
-  }, [settings, serverUrl]);
+  }, [settings]);
 
-  async function handleSave() {
-    updateSettings({ navidromeUrl, sonosProxyUrl, sonosProxyApiKey, persistQueue, companionUrl, companionApiKey });
+  function handleSave() {
+    updateSettings({ sonosProxyUrl, sonosProxyApiKey, persistQueue });
     reloadProxyUrl();
-    // Update the server-side proxy target so /rest routes to the new Navidrome URL
-    if (navidromeUrl && navidromeUrl.trim()) {
-      try {
-        await fetch('/api/proxy-config', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ navidromeUrl: navidromeUrl.trim() }),
-        });
-      } catch { /* server might not be running */ }
-    }
-    // Reconfigure API client with new Navidrome URL
-    reconfigureFromSettings(navidromeUrl);
-    // Reload companion settings
-    reloadCompanionSettings();
     setSaved(true);
-    // Verify the new connection works
-    if (navidromeUrl && navidromeUrl.trim() && navidromeUrl !== serverUrl) {
-      const ok = await reconnect();
-      if (ok) {
-        // Server changed — clear old track/queue that won't exist on the new backend
-        resetPlayback();
-        toast.show(`Connected to ${navidromeUrl}`);
-      } else {
-        toast.show('Could not connect — check URL or try logging out and back in');
-      }
-    }
+    toast.show('Settings saved');
     setTimeout(() => setSaved(false), 2000);
   }
 
@@ -71,35 +36,15 @@ export default function SettingsView() {
     <div className="w-full">
       <div className="mx-auto max-w-2xl px-6 py-8">
         <h1 className="mb-6 text-xl font-bold" style={{ color: 'var(--color-text)' }}>
-          Configuration
+          Settings
         </h1>
 
-        {/* Connection section */}
+        {/* Casting section */}
         <section className="mb-8">
           <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider" style={{ color: 'var(--color-text-muted)' }}>
-            Connection
+            Casting
           </h2>
-
           <div className="space-y-4 rounded-md border border-border bg-surface p-4">
-            {/* Navidrome URL */}
-            <div>
-              <label className="mb-1 block text-small font-medium" style={{ color: 'var(--color-text)' }}>
-                Navidrome Server URL
-              </label>
-              <input
-                type="url"
-                value={navidromeUrl}
-                onChange={e => setNavidromeUrl(e.target.value)}
-                placeholder="https://music.example.com or http://192.168.1.100:4533"
-                className="w-full rounded-sm border border-border bg-background px-3 py-2 text-small"
-                style={{ color: 'var(--color-text)' }}
-              />
-              <p className="mt-1 text-xs" style={{ color: 'var(--color-text-muted)' }}>
-                The URL of your Navidome instance. Currently connected to: <code>{serverUrl || '—'}</code>
-              </p>
-            </div>
-
-            {/* Sonos Proxy URL */}
             <div>
               <label className="mb-1 block text-small font-medium" style={{ color: 'var(--color-text)' }}>
                 Sonos Proxy URL
@@ -121,12 +66,7 @@ export default function SettingsView() {
                   Reset
                 </button>
               </div>
-              <p className="mt-1 text-xs" style={{ color: 'var(--color-text-muted)' }}>
-                URL of the Sonos cast proxy. Must be on the same network as your Sonos speakers. Defaults to <code>{`http://<player-host>:4321`}</code>.
-              </p>
             </div>
-
-            {/* Sonos Proxy API Key */}
             <div>
               <label className="mb-1 block text-small font-medium" style={{ color: 'var(--color-text)' }}>
                 Proxy API Key
@@ -139,9 +79,6 @@ export default function SettingsView() {
                 className="w-full rounded-sm border border-border bg-background px-3 py-2 text-small font-mono"
                 style={{ color: 'var(--color-text)' }}
               />
-              <p className="mt-1 text-xs" style={{ color: 'var(--color-text-muted)' }}>
-                Shared secret between player and proxy. Set the same value in <code>PROXY_API_KEY</code> on the proxy. Leave empty for no auth.
-              </p>
             </div>
           </div>
         </section>
@@ -165,9 +102,7 @@ export default function SettingsView() {
                 onClick={() => setPersistQueue(!persistQueue)}
                 className={`relative w-10 h-5 rounded-full transition-colors border-none cursor-pointer flex-shrink-0 ${persistQueue ? 'bg-primary' : 'bg-on-surface-variant/30'}`}
               >
-                <span
-                  className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${persistQueue ? 'translate-x-5' : 'translate-x-0'}`}
-                />
+                <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${persistQueue ? 'translate-x-5' : 'translate-x-0'}`} />
               </button>
             </label>
           </div>
@@ -202,50 +137,11 @@ export default function SettingsView() {
             </div>
           </div>
         </section>
-        <section className="mb-8">
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider" style={{ color: 'var(--color-text-muted)' }}>
-            Smart Features
-          </h2>
-          <div className="rounded-md border border-border bg-surface p-4 space-y-4">
-            <div>
-              <label className="mb-1 block text-small font-medium" style={{ color: 'var(--color-text)' }}>
-                Companion Service URL
-              </label>
-              <input
-                type="url"
-                value={companionUrl}
-                onChange={e => setCompanionUrl(e.target.value)}
-                placeholder="http://192.168.1.100:4322"
-                className="w-full rounded-sm border border-border bg-background px-3 py-2 text-small"
-                style={{ color: 'var(--color-text)' }}
-              />
-              <p className="mt-1 text-xs" style={{ color: 'var(--color-text-muted)' }}>
-                URL of the hifi companion service. Provides smart playlists, hot tracks, and radio mode. Leave empty to disable.
-              </p>
-            </div>
-            <div>
-              <label className="mb-1 block text-small font-medium" style={{ color: 'var(--color-text)' }}>
-                Companion API Key
-              </label>
-              <input
-                type="text"
-                value={companionApiKey}
-                onChange={e => setCompanionApiKey(e.target.value)}
-                placeholder="(optional shared secret)"
-                className="w-full rounded-sm border border-border bg-background px-3 py-2 text-small font-mono"
-                style={{ color: 'var(--color-text)' }}
-              />
-              <p className="mt-1 text-xs" style={{ color: 'var(--color-text-muted)' }}>
-                Shared secret between player and companion. Set the same value in <code>PROXY_API_KEY</code> on the companion. Leave empty for no auth.
-              </p>
-            </div>
-          </div>
-        </section>
 
-        {/* Profile section */}
+        {/* Profile / About */}
         <section className="mb-8">
           <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider" style={{ color: 'var(--color-text-muted)' }}>
-            Profile
+            Account
           </h2>
           <div className="rounded-md border border-border bg-surface p-4">
             <div className="flex items-center gap-4">
@@ -260,14 +156,13 @@ export default function SettingsView() {
                   {username || '—'}
                 </div>
                 <div className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
-                  Connected to Navidome
+                  Navidrome user
                 </div>
               </div>
             </div>
           </div>
         </section>
 
-        {/* About section */}
         <section className="mb-8">
           <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider" style={{ color: 'var(--color-text-muted)' }}>
             About
@@ -282,7 +177,6 @@ export default function SettingsView() {
           </div>
         </section>
 
-        {/* Save / Logout */}
         <div className="flex items-center gap-3">
           <button
             onClick={handleSave}

@@ -1,12 +1,9 @@
 import React, { createContext, useContext, useState, useCallback } from 'react';
 
 interface Settings {
-  navidromeUrl: string;
   sonosProxyUrl: string;
   sonosProxyApiKey: string;
   persistQueue: boolean;
-  companionUrl: string;
-  companionApiKey: string;
   autoplay: boolean;
   smartPlaylists: boolean;
 }
@@ -19,12 +16,9 @@ interface SettingsContextValue {
 const STORAGE_KEY = 'hifi_settings';
 
 const defaultSettings: Settings = {
-  navidromeUrl: '',
   sonosProxyUrl: '',
   sonosProxyApiKey: '',
   persistQueue: true,
-  companionUrl: '',
-  companionApiKey: '',
   autoplay: true,
   smartPlaylists: true,
 };

@@ -1,10 +1,8 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import {
   getHotTrackIds,
-  reloadCompanionSettings,
   checkCompanionHealth,
   getCompanionStatus,
-  getCompanionUrl,
   triggerScan,
   getSmartPlaylist,
   getRadioTracks,
@@ -27,29 +25,22 @@ interface CompanionContextValue {
   getNext: (currentSongId: string) => Promise<SubsonicSong | null>;
 }
 
-import { useSettings } from './SettingsContext';
 
 const CompanionContext = createContext<CompanionContextValue | null>(null);
 
 export function CompanionProvider({ children }: { children: React.ReactNode }) {
-  const { settings } = useSettings();
   const [enabled, setEnabled] = useState(false);
   const [hotTrackIds, setHotTrackIds] = useState<Set<string>>(new Set());
   const [scanStatus, setScanStatus] = useState<CompanionContextValue['scanStatus']>(null);
 
-  // Re-check companion whenever settings or auth change
-  // Settings change triggers dependency. For auth/login transitions,
-  // we rely on retry below since the provider mounts before login.
+  // Companion API is always at /api (same origin), no configurable URL needed.
   const checkAndInit = useCallback(async () => {
-    reloadCompanionSettings();
-    const url = getCompanionUrl();
-    if (!url) return false;
     const ok = await checkCompanionHealth();
     return ok;
   }, []);
 
   useEffect(() => {
-    console.log('[companion] init effect firing, settings changed');
+    console.log('[companion] init effect firing');
     checkAndInit().then(ok => {
       console.log('[companion] initial health check:', ok);
       if (ok) {
@@ -63,7 +54,7 @@ export function CompanionProvider({ children }: { children: React.ReactNode }) {
         setEnabled(false);
       }
     });
-  }, [settings.companionUrl, settings.companionApiKey, checkAndInit]);
+  }, [checkAndInit]);
 
   // Retry health check every 5s when not enabled — covers the case where
   // CompanionProvider mounts before the server is ready (e.g. before login)

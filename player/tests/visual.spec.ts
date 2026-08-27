@@ -111,10 +111,13 @@ test.describe('hifi Player — Visual Tests', () => {
   });
 
   test('login page structure', async ({ page }) => {
-    // Clear auth to see login page
-    await page.evaluate(() => {
-      localStorage.removeItem('hifi_auth');
-      sessionStorage.removeItem('hifi_auth');
+    // Override the default session mock — return not-setup so the onboarding screen appears
+    await page.route('**/api/auth/session', (route) => {
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ loggedIn: false, setup: false }),
+      });
     });
     await page.goto('/');
     await page.waitForTimeout(500);
@@ -122,9 +125,12 @@ test.describe('hifi Player — Visual Tests', () => {
     // Should see the hifi logo
     await expect(page.locator('text=hifi').first()).toBeVisible({ timeout: 5000 });
 
-    // Should see username and password fields
+    // Onboarding screen: Navidrome URL input, username, 2x password fields
+    await expect(page.locator('input[type="url"]')).toBeVisible({ timeout: 5000 });
     await expect(page.locator('input[type="text"]')).toBeVisible({ timeout: 5000 });
-    await expect(page.locator('input[type="password"]')).toBeVisible({ timeout: 5000 });
+    const pwFields = page.locator('input[type="password"]');
+    await expect(pwFields.nth(0)).toBeVisible({ timeout: 5000 });
+    await expect(pwFields.nth(1)).toBeVisible({ timeout: 5000 });
 
     // Should see submit button
     await expect(page.locator('button[type="submit"]')).toBeVisible({ timeout: 5000 });

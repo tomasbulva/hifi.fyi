@@ -1,66 +1,17 @@
 /**
- * hifi Companion API client — talks to the optional recommendation backend.
+ * hifi Companion API client — talks to the recommendation backend.
  *
- * The companion service scans the Navidrome library, caches ratings/tags in SQLite,
- * and provides smart playlist generation, hot track marking, and radio mode.
+ * All companion endpoints live at /api/* on the unified server (same origin).
+ * No configurable URL or API key needed — the cookie session handles auth.
  */
 
 import type { SubsonicSong } from './types';
 
-let COMPANION_URL = '';
-let COMPANION_API_KEY = '';
-
-function resolveCompanionUrl(): string {
-  try {
-    const raw = localStorage.getItem('hifi_settings');
-    if (raw) {
-      const settings = JSON.parse(raw);
-      if (settings.companionUrl && settings.companionUrl.trim()) {
-        return settings.companionUrl.trim().replace(/\/+$/, '');
-      }
-    }
-  } catch {}
-  // Default: relative /api (unified server setup)
-  return '/api';
-}
-
-function resolveApiKey(): string {
-  try {
-    const raw = localStorage.getItem('hifi_settings');
-    if (raw) {
-      const settings = JSON.parse(raw);
-      return settings.companionApiKey || '';
-    }
-  } catch {}
-  return '';
-}
-
-function apiHeaders(): Record<string, string> {
-  const h: Record<string, string> = {};
-  if (COMPANION_API_KEY) h['X-API-Key'] = COMPANION_API_KEY;
-  return h;
-}
-
-export function getCompanionUrl(): string {
-  return COMPANION_URL;
-}
-
-/** Reload URL and API key from settings */
-export function reloadCompanionSettings() {
-  COMPANION_URL = resolveCompanionUrl();
-  COMPANION_API_KEY = resolveApiKey();
-}
-
-// Initialize on load
-reloadCompanionSettings();
-
 // ── API methods ──
 
 export async function checkCompanionHealth(): Promise<boolean> {
-  if (!COMPANION_URL) return false;
   try {
-    const res = await fetch(`${COMPANION_URL}/health`, {
-      headers: apiHeaders(),
+    const res = await fetch(`/api/health`, {
       signal: AbortSignal.timeout(3000),
     });
     return res.ok;
@@ -70,11 +21,9 @@ export async function checkCompanionHealth(): Promise<boolean> {
 }
 
 export async function getHotTrackIds(threshold?: number): Promise<Set<string>> {
-  if (!COMPANION_URL) return new Set();
   try {
     const params = threshold ? `?threshold=${threshold}` : '';
-    const res = await fetch(`${COMPANION_URL}/hot${params}`, {
-      headers: apiHeaders(),
+    const res = await fetch(`/api/hot${params}`, {
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) return new Set();
@@ -86,10 +35,8 @@ export async function getHotTrackIds(threshold?: number): Promise<Set<string>> {
 }
 
 export async function getCompanionStatus(): Promise<{ scanning: boolean; total_songs: number; progress: number; last_scan: string } | null> {
-  if (!COMPANION_URL) return null;
   try {
-    const res = await fetch(`${COMPANION_URL}/status`, {
-      headers: apiHeaders(),
+    const res = await fetch(`/api/status`, {
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) return null;
@@ -100,11 +47,10 @@ export async function getCompanionStatus(): Promise<{ scanning: boolean; total_s
 }
 
 export async function triggerScan(): Promise<boolean> {
-  if (!COMPANION_URL) return false;
   try {
-    const res = await fetch(`${COMPANION_URL}/refresh`, {
+    const res = await fetch(`/api/refresh`, {
       method: 'POST',
-      headers: { ...apiHeaders(), 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json' },
     });
     return res.ok;
   } catch {
@@ -118,7 +64,6 @@ export async function getSmartPlaylist(params: {
   topRated?: boolean;
   limit?: number;
 }): Promise<SubsonicSong[]> {
-  if (!COMPANION_URL) return [];
   try {
     const qs = new URLSearchParams();
     if (params.mood) qs.set('mood', params.mood);
@@ -126,8 +71,7 @@ export async function getSmartPlaylist(params: {
     if (params.topRated) qs.set('topRated', 'true');
     if (params.limit) qs.set('limit', String(params.limit));
 
-    const res = await fetch(`${COMPANION_URL}/playlist?${qs}`, {
-      headers: apiHeaders(),
+    const res = await fetch(`/api/playlist?${qs}`, {
       signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) return [];
@@ -139,10 +83,8 @@ export async function getSmartPlaylist(params: {
 }
 
 export async function getRadioTracks(seed: string, limit = 50): Promise<SubsonicSong[]> {
-  if (!COMPANION_URL) return [];
   try {
-    const res = await fetch(`${COMPANION_URL}/radio?seed=${encodeURIComponent(seed)}&limit=${limit}`, {
-      headers: apiHeaders(),
+    const res = await fetch(`/api/radio?seed=${encodeURIComponent(seed)}&limit=${limit}`, {
       signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) return [];
@@ -154,10 +96,8 @@ export async function getRadioTracks(seed: string, limit = 50): Promise<Subsonic
 }
 
 export async function getNextRecommendation(currentSongId: string): Promise<SubsonicSong | null> {
-  if (!COMPANION_URL) return null;
   try {
-    const res = await fetch(`${COMPANION_URL}/next?currentSong=${encodeURIComponent(currentSongId)}`, {
-      headers: apiHeaders(),
+    const res = await fetch(`/api/next?currentSong=${encodeURIComponent(currentSongId)}`, {
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) return null;
@@ -169,9 +109,8 @@ export async function getNextRecommendation(currentSongId: string): Promise<Subs
 }
 
 export async function getDailyMixes(): Promise<any[]> {
-  if (!COMPANION_URL) return [];
   try {
-    const res = await fetch(`${COMPANION_URL}/daily-mixes`, { headers: apiHeaders(), signal: AbortSignal.timeout(5000) });
+    const res = await fetch(`/api/daily-mixes`, { signal: AbortSignal.timeout(5000) });
     if (!res.ok) return [];
     const data = await res.json();
     return data.mixes ?? [];
@@ -179,27 +118,24 @@ export async function getDailyMixes(): Promise<any[]> {
 }
 
 export async function getDailyMix(id: string): Promise<{ id: string; title: string; subtitle: string; songs: SubsonicSong[] } | null> {
-  if (!COMPANION_URL) return null;
   try {
-    const res = await fetch(`${COMPANION_URL}/daily-mix/${encodeURIComponent(id)}`, { headers: apiHeaders(), signal: AbortSignal.timeout(10000) });
+    const res = await fetch(`/api/daily-mix/${encodeURIComponent(id)}`, { signal: AbortSignal.timeout(10000) });
     if (!res.ok) return null;
     return await res.json();
   } catch { return null; }
 }
 
 export async function getArtistIntro(artistId: string): Promise<{ artist: { id: string; name: string; coverArt?: string }; tracks: SubsonicSong[]; trackCount: number } | null> {
-  if (!COMPANION_URL) return null;
   try {
-    const res = await fetch(`${COMPANION_URL}/artist-intro/${encodeURIComponent(artistId)}`, { headers: apiHeaders(), signal: AbortSignal.timeout(10000) });
+    const res = await fetch(`/api/artist-intro/${encodeURIComponent(artistId)}`, { signal: AbortSignal.timeout(10000) });
     if (!res.ok) return null;
     return await res.json();
   } catch { return null; }
 }
 
 export async function getGenres(): Promise<{ genre: string; count: number }[]> {
-  if (!COMPANION_URL) return [];
   try {
-    const res = await fetch(`${COMPANION_URL}/genres`, { headers: apiHeaders(), signal: AbortSignal.timeout(5000) });
+    const res = await fetch(`/api/genres`, { signal: AbortSignal.timeout(5000) });
     if (!res.ok) return [];
     const data = await res.json();
     return data.genres ?? [];
@@ -207,9 +143,8 @@ export async function getGenres(): Promise<{ genre: string; count: number }[]> {
 }
 
 export async function getGenreMix(genre: string): Promise<SubsonicSong[]> {
-  if (!COMPANION_URL) return [];
   try {
-    const res = await fetch(`${COMPANION_URL}/genre-mix/${encodeURIComponent(genre)}`, { headers: apiHeaders(), signal: AbortSignal.timeout(10000) });
+    const res = await fetch(`/api/genre-mix/${encodeURIComponent(genre)}`, { signal: AbortSignal.timeout(10000) });
     if (!res.ok) return [];
     const data = await res.json();
     return data.songs ?? [];
@@ -217,8 +152,7 @@ export async function getGenreMix(genre: string): Promise<SubsonicSong[]> {
 }
 
 export function getPlaylistCoverUrl(id: string): string {
-  if (!COMPANION_URL) return '';
-  return `${COMPANION_URL}/playlist-cover/${encodeURIComponent(id)}`;
+  return `/api/playlist-cover/${encodeURIComponent(id)}`;
 }
 
 export interface SongRating {
@@ -231,10 +165,8 @@ export interface SongRating {
 }
 
 export async function getSongRating(songId: string): Promise<SongRating | null> {
-  if (!COMPANION_URL) return null;
   try {
-    const res = await fetch(`${COMPANION_URL}/song/${encodeURIComponent(songId)}/rating`, {
-      headers: apiHeaders(),
+    const res = await fetch(`/api/song/${encodeURIComponent(songId)}/rating`, {
       signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) return null;

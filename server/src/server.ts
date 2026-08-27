@@ -26,6 +26,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dgram from 'dgram';
 import http from 'http';
+import crypto from 'crypto';
+import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 
 // Load .env from several possible locations
@@ -83,33 +85,12 @@ app.use((req, res, next) => {
   next();
 });
 
-// ── Auth middleware ──
 
-function authMiddleware(req: any, res: any, next: any) {
-  if (!API_KEY) return next();
-  // Skip auth for same-origin requests (frontend served by this server)
-  // Also skip for localhost/private-network requests (Vite dev, LAN access)
-  const origin = req.headers.origin || req.headers.referer || '';
-  const host = req.headers.host || '';
-  const ip = req.ip || req.socket.remoteAddress || '';
-  // Accept: origin/referer matches host, includes localhost, or is a private IP
-  const isLocal = origin && (origin.includes(host) || origin.includes('localhost') || origin.includes('127.0.0.1'));
-  const isPrivateIp = ip && (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || ip.startsWith('192.168.') || ip.startsWith('10.') || ip.startsWith('172.16.'));
-  // Also accept: no referer/origin but request is from private IP (same-origin fetch in built mode)
-  if (isLocal || isPrivateIp) {
-    return next();
-  }
-  const provided = req.headers['x-api-key'] || req.query.api_key;
-  if (provided !== API_KEY) {
-    return res.status(401).json({ error: 'Invalid API key' });
-  }
-  next();
-}
 
 // ── Navidrome proxy ──
 // All /rest/* requests are proxied to Navidrome. This means the frontend
 // never talks to Navidrome directly — no CORS issues, ever.
-// The proxy target is dynamic — can be changed at runtime via /api/proxy-config
+// The proxy target is dynamic — set at startup from DB config or /api/auth/setup.
 
 let currentNavidromeUrl = NAVIDROME_URL;
 
@@ -117,49 +98,15 @@ function navidromeRouter() {
   return currentNavidromeUrl || undefined;
 }
 
-if (currentNavidromeUrl) {
-  app.use(createProxyMiddleware({
-    target: currentNavidromeUrl,
-    changeOrigin: true,
-    pathFilter: '/rest',
-    router: navidromeRouter,
-  }));
-  console.log(`[hifi] Navidrome proxy: /rest → ${currentNavidromeUrl}/rest`);
-} else {
-  console.warn('[hifi] NAVIDROME_URL not set — /rest proxy disabled (configure via /api/proxy-config)');
-}
-
-// Runtime proxy config — get/set the Navidrome URL from the frontend
-app.get('/api/proxy-config', (req, res) => {
-  res.json({ navidromeUrl: currentNavidromeUrl });
-});
-
-app.post('/api/proxy-config', (req, res) => {
-  const { navidromeUrl, username: navidromeUser, password: navidromePass } = req.body;
-  if (!navidromeUrl || typeof navidromeUrl !== 'string') {
-    return res.status(400).json({ error: 'Missing navidromeUrl' });
-  }
-  const oldUrl = currentNavidromeUrl;
-  currentNavidromeUrl = navidromeUrl.replace(/\/+$/, '');
-  console.log(`[hifi] Navidrome proxy updated: ${oldUrl || '(none)'} → ${currentNavidromeUrl}/rest`);
-  // Reconfigure subsonic client + scanner with new URL and credentials
-  if (currentNavidromeUrl) {
-    const user = navidromeUser || NAVIDROME_USER;
-    const pass = navidromePass || NAVIDROME_PASSWORD;
-    if (user && pass) {
-      subsonicClient = new SubsonicClient(currentNavidromeUrl, user, pass);
-      scanner = new Scanner(subsonicClient, db);
-      console.log(`[hifi] Companion: reconfigured for ${currentNavidromeUrl} (user: ${user})`);
-      // Trigger a rescan since we're pointing at a new server
-      if (!scanner.isScanning) {
-        scanner.scan().catch(err => console.error('[hifi] Rescan failed:', err));
-      }
-    } else {
-      console.warn('[hifi] Companion: no credentials for reconfiguration');
-    }
-  }
-  res.json({ ok: true, navidromeUrl: currentNavidromeUrl });
-});
+// Always install the proxy; the router function returns undefined when
+// no Navidrome is configured, so requests pass through harmlessly.
+app.use(createProxyMiddleware({
+  target: currentNavidromeUrl || 'http://localhost',
+  changeOrigin: true,
+  pathFilter: '/rest',
+  router: navidromeRouter,
+}));
+console.log('[hifi] Navidrome proxy: /rest → (dynamic)', currentNavidromeUrl ? `currently ${currentNavidromeUrl}` : 'not yet configured');
 
 // ── Companion init ──
 
@@ -171,51 +118,202 @@ const db = new CompanionDB(DB_PATH);
 let subsonicClient: SubsonicClient | null = null;
 let scanner: Scanner | null = null;
 
-if (NAVIDROME_URL && NAVIDROME_USER && NAVIDROME_PASSWORD) {
-  subsonicClient = new SubsonicClient(NAVIDROME_URL, NAVIDROME_USER, NAVIDROME_PASSWORD);
+// Reset stale scanning flag (could be stuck from a crash/restart mid-scan)
+db.upsertScanningFlag(false);
+
+/** Configure or reconfigure the Navidrome connection (proxy + scanner). */
+function configureNavidrome(url: string, user: string, pass: string): void {
+  currentNavidromeUrl = url.replace(/\/+$/, '');
+  subsonicClient = new SubsonicClient(currentNavidromeUrl, user, pass);
   scanner = new Scanner(subsonicClient, db);
-  console.log(`[hifi] Companion: Navidrome configured`);
+  console.log(`[hifi] Navidrome configured: ${currentNavidromeUrl} (user: ${user})`);
+}
+
+// 1) Prefer DB-stored config (persisted from onboarding)
+const appConfig = db.getAppConfig();
+if (appConfig) {
+  configureNavidrome(appConfig.navidrome_url, appConfig.navidrome_username, appConfig.navidrome_password);
+  const scanStatus = db.getScanStatus();
+  if (scanStatus.total_songs === 0) {
+    console.log('[hifi] Companion: auto-scanning (no cached songs)...');
+    (scanner as unknown as Scanner).scan().catch((err: Error) => console.error('[hifi] Auto-scan failed:', err));
+  } else {
+    console.log(`[hifi] Companion: ${scanStatus.total_songs.toLocaleString()} cached songs`);
+  }
+} else if (NAVIDROME_URL && NAVIDROME_USER && NAVIDROME_PASSWORD) {
+  // 2) Fall back to env vars (legacy / dev — migrate via onboarding)
+  configureNavidrome(NAVIDROME_URL, NAVIDROME_USER, NAVIDROME_PASSWORD);
+  console.log('[hifi] Using env vars for Navidrome (no DB config yet)');
 } else {
-  console.warn('[hifi] Companion: Navidrome not configured — set NAVIDROME_URL, NAVIDROME_USER, NAVIDROME_PASSWORD');
+  console.log('[hifi] Navidrome not configured — frontend will trigger /api/auth/setup');
 }
 
-// Auto-scan on startup if no cached data
-const scanStatus = db.getScanStatus();
-if (subsonicClient && scanner && scanStatus.total_songs === 0) {
-  console.log('[hifi] Companion: starting initial scan...');
-  scanner.scan().catch(err => console.error('[hifi] Initial scan failed:', err));
+// ── Cookie & session middleware ──
+app.use(cookieParser());
+
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+function sessionMiddleware(req: any, res: any, next: any) {
+  const token = req.cookies?.hifi_token;
+  if (token && db.validateSession(token)) return next();
+
+  // Allow localhost/private-network requests without auth (dev mode, same-origin)
+  const ip = req.ip || req.socket.remoteAddress || '';
+  if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' ||
+      ip.startsWith('192.168.') || ip.startsWith('10.') || ip.startsWith('172.16.')) {
+    return next();
+  }
+
+  // Fall back to API key for programmatic access
+  if (API_KEY) {
+    const key = req.headers['x-api-key'] || req.query.api_key;
+    if (key === API_KEY) return next();
+  }
+
+  res.status(401).json({ error: 'Unauthorized' });
 }
 
-// ── Auth/ban endpoints ──
+// ── Auth endpoints ──
 
-// Report failed login attempt
+// Check current session state — called by frontend on mount
+app.get('/api/auth/session', (req, res) => {
+  const token = req.cookies?.hifi_token;
+  const valid = token ? db.validateSession(token) : false;
+  const config = db.getAppConfig();
+
+  if (valid && config) {
+    res.json({
+      loggedIn: true,
+      setup: true,
+      appUsername: config.app_username,
+      navidromeUsername: config.navidrome_username,
+      navidromePassword: config.navidrome_password,
+    });
+  } else if (config) {
+    res.json({ loggedIn: false, setup: true });
+  } else {
+    res.json({ loggedIn: false, setup: false });
+  }
+});
+
+// First-time setup — stores Navidrome config + app password, creates session
+app.post('/api/auth/setup', (req, res) => {
+  const { navidromeUrl, navidromeUsername, navidromePassword, appPassword } = req.body;
+  if (!navidromeUrl || !navidromeUsername || !navidromePassword || !appPassword) {
+    return res.status(400).json({ error: 'Missing fields: navidromeUrl, navidromeUsername, navidromePassword, appPassword' });
+  }
+  if (db.getAppConfig()) {
+    return res.status(409).json({ error: 'Already set up. Log in instead.' });
+  }
+
+  crypto.scrypt(appPassword, 'hifi_salt_' + navidromeUsername, 64, (err, hash) => {
+    if (err) {
+      console.error('[hifi] scrypt error:', err);
+      return res.status(500).json({ error: 'Internal error' });
+    }
+    const hashStr = hash.toString('hex');
+    // Store credentials in DB (single source of truth for Navidrome connection)
+    db.saveAppConfig({
+      navidromeUrl,
+      navidromeUsername,
+      navidromePassword,
+      appUsername: navidromeUsername,
+      appPasswordHash: hashStr,
+    });
+
+    // Configure the proxy + scanner
+    configureNavidrome(navidromeUrl, navidromeUsername, navidromePassword);
+
+    // Start scanning in background
+    if (scanner && !scanner.isScanning) {
+      scanner.scan().catch(err => console.error('[hifi] Setup scan failed:', err));
+    }
+
+    // Create session token
+    const token = crypto.randomBytes(32).toString('hex');
+    db.createSession(token);
+
+    res.cookie('hifi_token', token, {
+      httpOnly: true,
+      sameSite: 'lax',
+      maxAge: SESSION_TTL_MS,
+      path: '/',
+    });
+    res.json({ ok: true, loggedIn: true });
+  });
+});
+
+// Login — verify app password, create session
+app.post('/api/auth/login', (req, res) => {
+  const { appPassword } = req.body;
+  if (!appPassword) return res.status(400).json({ error: 'Missing appPassword' });
+
+  const config = db.getAppConfig();
+  if (!config) return res.status(404).json({ error: 'Not set up. Run /api/auth/setup first.' });
+
+  crypto.scrypt(appPassword, 'hifi_salt_' + config.app_username, 64, (err, hash) => {
+    if (err) {
+      console.error('[hifi] scrypt error:', err);
+      return res.status(500).json({ error: 'Internal error' });
+    }
+    if (hash.toString('hex') !== config.app_password_hash) {
+      return res.status(401).json({ error: 'Invalid password' });
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    db.createSession(token);
+
+    res.cookie('hifi_token', token, {
+      httpOnly: true,
+      sameSite: 'lax',
+      maxAge: SESSION_TTL_MS,
+      path: '/',
+    });
+    res.json({ ok: true, loggedIn: true });
+  });
+});
+
+// Logout
+app.post('/api/auth/logout', (req, res) => {
+  const token = req.cookies?.hifi_token;
+  if (token) db.deleteSession(token);
+  res.clearCookie('hifi_token', { path: '/' });
+  res.json({ ok: true });
+});
+
+// ── Runtime proxy config (get-only; setting is done via /api/auth/setup) ──
+app.get('/api/proxy-config', (req, res) => {
+  res.json({
+    navidromeUrl: currentNavidromeUrl,
+    configured: !!db.getAppConfig(),
+  });
+});
+
+// ── Ban endpoints (unchanged) ──
+
 app.post('/api/auth/failed', (req, res) => {
   const ip = req.ip || req.socket.remoteAddress || '';
   const result = recordFailedAttempt(ip);
   res.json({ banned: result.banned, duration: result.duration, permanent: result.permanent });
 });
 
-// Report successful login (clears attempts)
 app.post('/api/auth/success', (req, res) => {
   const ip = req.ip || req.socket.remoteAddress || '';
   recordSuccessfulLogin(ip);
   res.json({ ok: true });
 });
 
-// Check ban status
 app.get('/api/auth/ban-status', (req, res) => {
   const ip = req.ip || req.socket.remoteAddress || '';
   const ban = isBanned(ip);
   res.json(ban);
 });
 
-// Admin: list banned IPs
-app.get('/api/bans', authMiddleware, (req, res) => {
+app.get('/api/bans', sessionMiddleware, (req, res) => {
   res.json({ bans: getBanList() });
 });
 
-// Admin: manually ban an IP (permanent)
-app.post('/api/bans', authMiddleware, (req, res) => {
+app.post('/api/bans', sessionMiddleware, (req, res) => {
   const ip = req.body.ip;
   if (!ip || typeof ip !== 'string') {
     return res.status(400).json({ error: 'Missing or invalid "ip" in body' });
@@ -224,14 +322,12 @@ app.post('/api/bans', authMiddleware, (req, res) => {
   res.json({ banned: true, ip, added });
 });
 
-// Admin: unban an IP
-app.delete('/api/bans/:ip', authMiddleware, (req, res) => {
+app.delete('/api/bans/:ip', sessionMiddleware, (req, res) => {
   const removed = unbanIp(req.params.ip);
   res.json({ unbanned: removed });
 });
 
-// Admin: clear all auto-bans (manual bans stay)
-app.delete('/api/bans', authMiddleware, (req, res) => {
+app.delete('/api/bans', sessionMiddleware, (req, res) => {
   clearAllBans();
   res.json({ cleared: true });
 });
@@ -248,7 +344,7 @@ app.get('/api/health', (req, res) => {
 });
 
 // Get rating for a specific song (from companion DB + last.fm)
-app.get('/api/song/:id/rating', authMiddleware, async (req, res) => {
+app.get('/api/song/:id/rating', sessionMiddleware, async (req, res) => {
   const songId = req.params.id;
   const cached = db.getSongById(songId);
   
@@ -279,7 +375,7 @@ app.get('/api/song/:id/rating', authMiddleware, async (req, res) => {
 });
 
 // Batch get ratings for multiple songs
-app.get('/api/ratings', authMiddleware, (req, res) => {
+app.get('/api/ratings', sessionMiddleware, (req, res) => {
   const ids = (req.query.ids as string || '').split(',').filter(Boolean);
   if (ids.length === 0) return res.json({ ratings: {} });
   const ratings: Record<string, { rating: number; starred: boolean }> = {};
@@ -301,20 +397,20 @@ app.get('/api/status', (req, res) => {
   });
 });
 
-app.post('/api/refresh', authMiddleware, async (req, res) => {
+app.post('/api/refresh', sessionMiddleware, async (req, res) => {
   if (!scanner) return res.status(503).json({ error: 'Navidrome not configured' });
   if (scanner.isScanning) return res.status(409).json({ error: 'Scan already in progress' });
   scanner.scan().catch(err => console.error('[hifi] Scan failed:', err));
   res.json({ ok: true, message: 'Scan started' });
 });
 
-app.get('/api/hot', authMiddleware, (req, res) => {
+app.get('/api/hot', sessionMiddleware, (req, res) => {
   const threshold = parseInt(req.query.threshold as string) || HOT_THRESHOLD;
   const ids = db.getHotSongs(threshold);
   res.json({ songs: ids, threshold });
 });
 
-app.get('/api/songs', authMiddleware, (req, res) => {
+app.get('/api/songs', sessionMiddleware, (req, res) => {
   const minRating = parseInt(req.query.minRating as string) || 0;
   const maxRating = parseInt(req.query.maxRating as string) || 5;
   const genre = req.query.genre as string;
@@ -337,7 +433,7 @@ app.get('/api/songs', authMiddleware, (req, res) => {
   res.json({ songs });
 });
 
-app.get('/api/playlist', authMiddleware, (req, res) => {
+app.get('/api/playlist', sessionMiddleware, (req, res) => {
   const mood = req.query.mood as string;
   const era = req.query.era as string;
   const topRated = req.query.topRated === 'true';
@@ -360,7 +456,7 @@ app.get('/api/playlist', authMiddleware, (req, res) => {
   res.json({ songs });
 });
 
-app.get('/api/radio', authMiddleware, async (req, res) => {
+app.get('/api/radio', sessionMiddleware, async (req, res) => {
   if (!subsonicClient) return res.status(503).json({ error: 'Navidrome not configured' });
 
   const seed = req.query.seed as string;
@@ -400,7 +496,7 @@ app.get('/api/radio', authMiddleware, async (req, res) => {
   }
 });
 
-app.get('/api/next', authMiddleware, async (req, res) => {
+app.get('/api/next', sessionMiddleware, async (req, res) => {
   if (!subsonicClient) return res.status(503).json({ error: 'Navidrome not configured' });
 
   const currentSongId = req.query.currentSong as string;
@@ -421,12 +517,12 @@ app.get('/api/next', authMiddleware, async (req, res) => {
 
 // ── Daily Mix endpoints ──
 
-app.get('/api/daily-mixes', authMiddleware, (req, res) => {
+app.get('/api/daily-mixes', sessionMiddleware, (req, res) => {
   const mixes = db.getDailyMixes();
   res.json({ mixes });
 });
 
-app.get('/api/daily-mix/:id', authMiddleware, (req, res) => {
+app.get('/api/daily-mix/:id', sessionMiddleware, (req, res) => {
   const mix = db.getDailyMix(req.params.id);
   if (!mix) return res.status(404).json({ error: 'Mix not found' });
   res.json(mix);
@@ -434,7 +530,7 @@ app.get('/api/daily-mix/:id', authMiddleware, (req, res) => {
 
 // ── Artist Intro endpoint ──
 
-app.get('/api/artist-intro/:artistId', authMiddleware, async (req, res) => {
+app.get('/api/artist-intro/:artistId', sessionMiddleware, async (req, res) => {
   if (!subsonicClient) return res.status(503).json({ error: 'Navidrome not configured' });
   const artistId = req.params.artistId;
   try {
@@ -478,12 +574,12 @@ app.get('/api/artist-intro/:artistId', authMiddleware, async (req, res) => {
 
 // ── Genre Mix endpoints ──
 
-app.get('/api/genres', authMiddleware, (req, res) => {
+app.get('/api/genres', sessionMiddleware, (req, res) => {
   const genres = db.getGenres();
   res.json({ genres });
 });
 
-app.get('/api/genre-mix/:genre', authMiddleware, (req, res) => {
+app.get('/api/genre-mix/:genre', sessionMiddleware, (req, res) => {
   const genre = decodeURIComponent(req.params.genre);
   const songs = db.getSongsByGenre(genre, 50);
   // Enrich with cached data
@@ -502,7 +598,7 @@ app.get('/api/genre-mix/:genre', authMiddleware, (req, res) => {
 
 // ── Playlist cover endpoint ──
 
-app.get('/api/playlist-cover/:id', authMiddleware, async (req, res) => {
+app.get('/api/playlist-cover/:id', sessionMiddleware, async (req, res) => {
   const id = req.params.id;
   // Try to get cached cover
   const cached = db.getPlaylistCover(id);
@@ -785,7 +881,7 @@ app.get('/api/sonos/status', async (req, res) => {
   }
 });
 
-app.post('/api/sonos/cast', authMiddleware, async (req, res) => {
+app.post('/api/sonos/cast', sessionMiddleware, async (req, res) => {
   let { ip, streamUrl, title, artist } = req.body;
   if (!ip) return res.status(400).json({ error: 'Missing or invalid ip' });
   if (!streamUrl) return res.status(400).json({ error: 'Missing streamUrl' });
@@ -817,7 +913,7 @@ app.post('/api/sonos/cast', authMiddleware, async (req, res) => {
   }
 });
 
-app.post('/api/sonos/pause', authMiddleware, async (req, res) => {
+app.post('/api/sonos/pause', sessionMiddleware, async (req, res) => {
   const { ip } = req.body;
   if (!ip) return res.status(400).json({ error: 'Missing or invalid ip' });
   try {
@@ -826,7 +922,7 @@ app.post('/api/sonos/pause', authMiddleware, async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/sonos/resume', authMiddleware, async (req, res) => {
+app.post('/api/sonos/resume', sessionMiddleware, async (req, res) => {
   const { ip } = req.body;
   if (!ip) return res.status(400).json({ error: 'Missing or invalid ip' });
   try {
@@ -835,7 +931,7 @@ app.post('/api/sonos/resume', authMiddleware, async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/sonos/stop', authMiddleware, async (req, res) => {
+app.post('/api/sonos/stop', sessionMiddleware, async (req, res) => {
   const { ip } = req.body;
   if (!ip) return res.status(400).json({ error: 'Missing or invalid ip' });
   try {
@@ -844,7 +940,7 @@ app.post('/api/sonos/stop', authMiddleware, async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/sonos/seek', authMiddleware, async (req, res) => {
+app.post('/api/sonos/seek', sessionMiddleware, async (req, res) => {
   const { ip, positionSec } = req.body;
   if (!ip) return res.status(400).json({ error: 'Missing or invalid ip' });
   if (positionSec === undefined) return res.status(400).json({ error: 'Missing positionSec' });
@@ -855,7 +951,7 @@ app.post('/api/sonos/seek', authMiddleware, async (req, res) => {
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
-app.post('/api/sonos/volume', authMiddleware, async (req, res) => {
+app.post('/api/sonos/volume', sessionMiddleware, async (req, res) => {
   const { ip, volume } = req.body;
   if (!ip) return res.status(400).json({ error: 'Missing or invalid ip' });
   if (volume === undefined || volume < 0 || volume > 100) return res.status(400).json({ error: 'Invalid volume (0-100)' });

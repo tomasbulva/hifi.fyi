@@ -2,139 +2,149 @@ import React, { createContext, useContext, useState, useCallback, useEffect } fr
 import { configure as configureApi, ping } from './api';
 
 interface AuthState {
+  /** True when the session cookie is valid and the user can access the player. */
   isLoggedIn: boolean;
-  serverUrl: string;
+  /** True after first-time setup has been completed (app_config exists in DB). */
+  setupDone: boolean;
+  /** Navidrome username (from the session). */
   username: string;
+  /** Loading is true while the initial session check is in-flight. */
+  loading: boolean;
   error: string | null;
 }
 
 interface AuthContextValue extends AuthState {
-  login: (serverUrl: string, username: string, password: string) => Promise<boolean>;
+  /** Navidrome username (from the session). */
+  username: string;
+  /** First-time onboarding: store Navidrome credentials + app password on the server. */
+  setup: (navidromeUrl: string, navidromeUsername: string, navidromePassword: string, appPassword: string) => Promise<boolean>;
+  /** Login with app password (Navidrome URL is already stored in the backend). */
+  login: (appPassword: string) => Promise<boolean>;
+  /** Clear the session cookie and stop playback. */
   logout: () => void;
-  reconnect: () => Promise<boolean>;
 }
 
-const STORAGE_KEY = 'hifi_auth';
+// Navidrome credentials returned by /api/auth/session — stored in memory only,
+// used by api.ts to compute Subsonic auth tokens for /rest proxy requests.
+// Exported so api.ts can read them without re-fetching.
+let memNavidromeUser = '';
+let memNavidromePass = '';
 
-// Password is stored per-tab-session in a module variable.
-// It is NOT persisted to any storage — sessionStorage holds { serverUrl, username } only.
-// This prevents XSS from stealing the password while allowing auto-login on page refresh.
-let cachedPassword = '';
+export function getNavidromeCreds(): { username: string; password: string } {
+  return { username: memNavidromeUser, password: memNavidromePass };
+}
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<AuthState>({
     isLoggedIn: false,
-    serverUrl: '',
+    setupDone: false,
     username: '',
+    loading: true,
     error: null,
   });
 
-  // Try auto-login on mount — check if we have a saved password in this session
+  // On mount: check if we have a valid session cookie
   useEffect(() => {
     let cancelled = false;
-    try {
-      const raw = sessionStorage.getItem(STORAGE_KEY);
-      if (!raw) return;
-      const { serverUrl, username, password } = JSON.parse(raw);
-      if (!password) return;
-      cachedPassword = password;
-      // First: ensure server-side proxy points at the right Navidrome URL
-      if (serverUrl && serverUrl.trim()) {
-        fetch('/api/proxy-config', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ navidromeUrl: serverUrl.trim() }),
-        }).catch(() => {}).finally(() => {
-          if (cancelled) return;
-          configureApi(serverUrl, username, cachedPassword);
+    fetch('/api/auth/session', { credentials: 'same-origin' })
+      .then(res => res.json())
+      .then((data: { loggedIn: boolean; setup: boolean; navidromeUsername?: string; navidromePassword?: string }) => {
+        if (cancelled) return;
+        if (data.loggedIn && data.navidromeUsername && data.navidromePassword) {
+          memNavidromeUser = data.navidromeUsername;
+          memNavidromePass = data.navidromePassword;
+          configureApi('', data.navidromeUsername, data.navidromePassword);
+          // Verify the Navidrome connection works
           ping().then(ok => {
             if (cancelled) return;
             if (ok) {
-              setState({ isLoggedIn: true, serverUrl, username, error: null });
+              setState({ isLoggedIn: true, username: memNavidromeUser, setupDone: true, loading: false, error: null });
             } else {
-              cachedPassword = '';
-              sessionStorage.removeItem(STORAGE_KEY);
+              // Session is valid but Navidrome is unreachable (server might be down)
+              setState({ isLoggedIn: true, username: memNavidromeUser, setupDone: true, loading: false, error: null });
             }
           }).catch(() => {
-            cachedPassword = '';
-            sessionStorage.removeItem(STORAGE_KEY);
+            if (cancelled) return;
+            setState({ isLoggedIn: true, username: memNavidromeUser, setupDone: true, loading: false, error: null });
           });
-        });
-      } else {
-        // No server URL — use relative /rest (unified server)
-        configureApi('', username, cachedPassword);
-        ping().then(ok => {
-          if (cancelled) return;
-          if (ok) {
-            setState({ isLoggedIn: true, serverUrl: '', username, error: null });
-          } else {
-            cachedPassword = '';
-            sessionStorage.removeItem(STORAGE_KEY);
-          }
-        }).catch(() => {
-          cachedPassword = '';
-          sessionStorage.removeItem(STORAGE_KEY);
-        });
-      }
-    } catch { /* no saved creds */ }
+        } else {
+          setState({ isLoggedIn: false, setupDone: data.setup, username: '', loading: false, error: null });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setState({ isLoggedIn: false, setupDone: false, username: '', loading: false, error: 'Server unreachable' });
+      });
     return () => { cancelled = true; };
   }, []);
 
-  const login = useCallback(async (serverUrl: string, username: string, password: string): Promise<boolean> => {
+  const setup = useCallback(async (navidromeUrl: string, navidromeUsername: string, navidromePassword: string, appPassword: string): Promise<boolean> => {
     try {
-      configureApi(serverUrl, username, password);
-      const ok = await ping();
-      if (ok) {
-        cachedPassword = password;
-        // sessionStorage persists across page refresh in same tab, cleared on tab close.
-        // Password is NOT exposed to other tabs (sessionStorage is tab-scoped).
-        sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ serverUrl, username, password }));
-        setState({ isLoggedIn: true, serverUrl, username, error: null });
-        return true;
-      } else {
-        setState(s => ({ ...s, error: 'Connection failed. Check your URL and credentials.' }));
+      const res = await fetch('/api/auth/setup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ navidromeUrl, navidromeUsername, navidromePassword, appPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setState(s => ({ ...s, error: data.error || 'Setup failed', loading: false }));
         return false;
       }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Unknown error';
-      setState(s => ({ ...s, error: msg }));
+      memNavidromeUser = navidromeUsername;
+      memNavidromePass = navidromePassword;
+      configureApi('', navidromeUsername, navidromePassword);
+      setState({ isLoggedIn: true, username: memNavidromeUser, setupDone: true, loading: false, error: null });
+      return true;
+    } catch {
+      setState(s => ({ ...s, error: 'Server unreachable', loading: false }));
+      return false;
+    }
+  }, []);
+
+  const login = useCallback(async (appPassword: string): Promise<boolean> => {
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ appPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setState(s => ({ ...s, error: data.error || 'Invalid password', loading: false }));
+        return false;
+      }
+      // Re-fetch session to get Navidrome credentials
+      const sessionRes = await fetch('/api/auth/session', { credentials: 'same-origin' });
+      const sessionData = await sessionRes.json();
+      if (sessionData.navidromeUsername && sessionData.navidromePassword) {
+        memNavidromeUser = sessionData.navidromeUsername;
+        memNavidromePass = sessionData.navidromePassword;
+        configureApi('', sessionData.navidromeUsername, sessionData.navidromePassword);
+      }
+      setState({ isLoggedIn: true, username: memNavidromeUser, setupDone: true, loading: false, error: null });
+      return true;
+    } catch {
+      setState(s => ({ ...s, error: 'Server unreachable', loading: false }));
       return false;
     }
   }, []);
 
   const logout = useCallback(() => {
-    cachedPassword = '';
-    sessionStorage.removeItem(STORAGE_KEY);
-    // Clear persisted playback state — old track/queue won't exist on a different server
+    fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+    memNavidromeUser = '';
+    memNavidromePass = '';
+    // Clear persisted playback state
     localStorage.removeItem('hifi_queue');
     localStorage.removeItem('hifi_last_track');
     localStorage.removeItem('hifi_codec_info');
     // Dispatch event so MusicContext can stop the engine and clear state
     window.dispatchEvent(new Event('hifi:logout'));
-    setState({ isLoggedIn: false, serverUrl: '', username: '', error: null });
-  }, []);
-
-  const reconnect = useCallback(async (): Promise<boolean> => {
-    try {
-      const ok = await ping();
-      if (ok) {
-        setState(s => ({ ...s, error: null }));
-        return true;
-      } else {
-        setState(s => ({ ...s, error: 'Reconnection failed. Check your URL.' }));
-        return false;
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Unknown error';
-      setState(s => ({ ...s, error: msg }));
-      return false;
-    }
+    setState({ isLoggedIn: false, setupDone: true, username: '', loading: false, error: null });
   }, []);
 
   return (
-    <AuthContext.Provider value={{ ...state, login, logout, reconnect }}>
+    <AuthContext.Provider value={{ ...state, setup, login, logout }}>
       {children}
     </AuthContext.Provider>
   );

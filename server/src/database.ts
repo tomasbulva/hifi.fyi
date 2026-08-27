@@ -91,6 +91,21 @@ export class CompanionDB {
         content_type TEXT,
         created_at TEXT
       );
+      CREATE TABLE IF NOT EXISTS app_config (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        navidrome_url TEXT,
+        navidrome_username TEXT,
+        navidrome_password TEXT,
+        app_username TEXT,
+        app_password_hash TEXT,
+        created_at TEXT,
+        updated_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS sessions (
+        token TEXT PRIMARY KEY,
+        created_at TEXT,
+        expires_at TEXT
+      );
     `);
   }
 
@@ -269,6 +284,54 @@ export class CompanionDB {
 
   savePlaylistCover(id: string, data: string, contentType: string): void {
     this.db.prepare('INSERT OR REPLACE INTO playlist_covers (id, data, content_type, created_at) VALUES (?, ?, ?, ?)').run(id, data, contentType, new Date().toISOString());
+  }
+
+  // ── App auth ──
+
+  getAppConfig(): { navidrome_url: string; navidrome_username: string; navidrome_password: string; app_username: string; app_password_hash: string } | null {
+    return (this.db.prepare('SELECT * FROM app_config WHERE id = 1').get() as any) ?? null;
+  }
+
+  saveAppConfig(params: { navidromeUrl: string; navidromeUsername: string; navidromePassword: string; appUsername: string; appPasswordHash: string }): void {
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO app_config (id, navidrome_url, navidrome_username, navidrome_password, app_username, app_password_hash, created_at, updated_at)
+      VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        navidrome_url=?, navidrome_username=?, navidrome_password=?, app_username=?, app_password_hash=?, updated_at=?
+    `).run(
+      params.navidromeUrl, params.navidromeUsername, params.navidromePassword, params.appUsername, params.appPasswordHash, now, now,
+      params.navidromeUrl, params.navidromeUsername, params.navidromePassword, params.appUsername, params.appPasswordHash, now,
+    );
+  }
+
+  upsertScanningFlag(scanning: boolean): void {
+    this.db.prepare(`
+      INSERT INTO scan_status (id, last_scan, total_songs, scanning, progress)
+      VALUES (1, '', 0, ?, 0)
+      ON CONFLICT(id) DO UPDATE SET scanning=?
+    `).run(scanning ? 1 : 0, scanning ? 1 : 0);
+  }
+
+  createSession(token: string): void {
+    const now = new Date();
+    const expires = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000); // 30 days
+    this.db.prepare('INSERT OR REPLACE INTO sessions (token, created_at, expires_at) VALUES (?, ?, ?)').run(token, now.toISOString(), expires.toISOString());
+    // Clean old sessions
+    this.db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(now.toISOString());
+  }
+
+  validateSession(token: string): boolean {
+    const row = this.db.prepare('SELECT * FROM sessions WHERE token = ? AND expires_at > ?').get(token, new Date().toISOString()) as any;
+    return !!row;
+  }
+
+  deleteSession(token: string): void {
+    this.db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+  }
+
+  deleteAllSessions(): void {
+    this.db.prepare('DELETE FROM sessions').run();
   }
 
   close(): void { this.db.close(); }

@@ -23,7 +23,7 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useMediaSession } from './hooks/useMediaSession';
 
 function PlayerApp() {
-  const { isLoggedIn } = useAuth();
+  const { isLoggedIn, loading } = useAuth();
   const location = useLocation();
   const { scanStatus } = useCompanion();
   const [scanBanner, setScanBanner] = useState<string | null>(null);
@@ -61,6 +61,15 @@ function PlayerApp() {
     }
   }, [scanStatus?.scanning, scanStatus?.progress, scanStatus?.total_songs]);
 
+  if (loading) {
+    return (
+      <div className="flex min-h-[100dvh] items-center justify-center" style={{ background: 'var(--color-background)' }}>
+        <span className="material-symbols-outlined animate-spin text-3xl" style={{ color: 'var(--color-primary)', opacity: 0.6 }}>
+          progress_activity
+        </span>
+      </div>
+    );
+  }
   if (!isLoggedIn) return <Login />;
 
   const showMiniPlayer = location.pathname !== '/player';

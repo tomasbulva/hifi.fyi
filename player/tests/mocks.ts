@@ -182,6 +182,93 @@ export async function setupApiMocks(page: import('@playwright/test').Page) {
   // Track starred songs for star/unstar endpoints
   const starred = new Set<string>();
 
+  // ── New cookie-based auth mocks ──
+
+  // Session check — return logged-in so tests skip the onboarding/login screen
+  await page.route('**/api/auth/session', (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        loggedIn: true,
+        setup: true,
+        appUsername: 'testuser',
+        navidromeUsername: 'testuser',
+        navidromePassword: 'testpass',
+      }),
+    });
+  });
+
+  // Logout
+  await page.route('**/api/auth/logout', (route) => {
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
+  });
+
+  // Setup — not used in tests (session already logged in), but prevent unhandled requests
+  await page.route('**/api/auth/setup', (route) => {
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, loggedIn: true }) });
+  });
+
+  await page.route('**/api/auth/login', (route) => {
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, loggedIn: true }) });
+  });
+
+  // Companion health check
+  await page.route('**/api/health', (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ok: true, navidrome: true, lastfm: false, songs: 7 }),
+    });
+  });
+
+  // Companion scan status
+  await page.route('**/api/status', (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ scanning: false, total_songs: 7, progress: 100, last_scan: new Date().toISOString() }),
+    });
+  });
+
+  // Hot tracks
+  await page.route('**/api/hot**', (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ songs: ['song-1', 'song-2'], threshold: 5 }),
+    });
+  });
+
+  // Daily mixes
+  await page.route('**/api/daily-mixes', (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ mixes: [] }),
+    });
+  });
+
+  // Genres
+  await page.route('**/api/genres', (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ genres: [] }),
+    });
+  });
+
+  // Proxy config
+  await page.route('**/api/proxy-config', (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ navidromeUrl: 'http://localhost:4533', configured: true }),
+    });
+  });
+
+  // ── Subsonic API mocks ──
+
   // Mock Subsonic ping
   await page.route('**/rest/ping.view**', (route) => {
     route.fulfill({
@@ -579,16 +666,12 @@ export async function setupApiMocks(page: import('@playwright/test').Page) {
 }
 
 /**
- * Log in the player via the login form.
- * Must be called after setupApiMocks.
+ * Log in the player — the session endpoint mock returns loggedIn:true,
+ * so the app auto-logins after the initial session check. Just navigate and wait.
  */
 export async function loginPlayer(page: import('@playwright/test').Page) {
   await page.goto('/');
-  // Fill login form — only username and password (serverUrl field is hidden)
-  await page.fill('input[type="text"]', 'testuser');
-  await page.fill('input[type="password"]', 'testpass');
-  await page.click('button[type="submit"]');
-  // Wait for navigation to player
+  // App auto-logins via cookie session (mocked /api/auth/session returns loggedIn:true)
   await page.waitForURL('**/player', { timeout: 10_000 });
   // Wait for the app to settle
   await page.waitForTimeout(500);

@@ -1,13 +1,11 @@
 /**
  * Subsonic API client for Navidrome.
  * Uses token+salt authentication (MD5) per Subsonic spec.
- * Auth method: t=md5(password+salt)&s=salt
  *
- * Security improvements:
- * - Fresh salt+token generated per request (prevents replay attacks)
- * - Auth sent via custom headers for API calls (not in URL query string)
- * - Stream/cover URLs still use query params (Subsonic spec limitation for media URLs)
- * - Password kept in memory only, stored in sessionStorage (cleared on tab close)
+ * All requests use relative /rest — the browser stays same-origin.
+ * The unified server proxies /rest → Navidrome (dynamic target).
+ * Credentials are stored in memory only (via AuthContext.getNavidromeCreds()).
+ * No credentials in localStorage or sessionStorage.
  */
 
 import { md5 } from 'js-md5';
@@ -16,36 +14,21 @@ import type { SubsonicArtist, SubsonicAlbum, SubsonicSong, SubsonicPlaylist, Sub
 const API_VERSION = '1.16.1';
 const CLIENT_NAME = 'hifi-web-player';
 
-let baseUrl = '';
-let username = '';
-let password = '';
+// Credentials are kept in module-scoped memory — set by AuthContext on login/session restore.
+let _username = '';
+let _password = '';
 
-// ---- config ----
+// Stable salt/token for cover-art URLs (replayed across requests so the browser
+// cache isn't busted on every render).
+let _coverSalt: string | null = null;
+let _coverToken: string | null = null;
 
+/** Called by AuthContext after successful login or session restore. */
 export function configure(_serverUrl: string, user: string, pass: string) {
-  // Always use relative /rest — the browser must stay same-origin to avoid CORS.
-  // The server-side proxy (unified server or Vite dev proxy) handles routing
-  // to Navidrome. The proxy target is configured via:
-  //   - Production: NAVIDROME_URL env var on the unified server
-  //   - Dev: VITE_NAVIDROME_URL env var, or runtime config via /api/proxy-config
-  baseUrl = '/rest';
-  username = user;
-  password = pass;
-  // Reset cover art auth so new credentials get a fresh stable token
+  _username = user;
+  _password = pass;
   _coverSalt = null;
   _coverToken = null;
-}
-
-/** Reconfigure API from saved settings — used when settings change without full login */
-export function reconfigureFromSettings(serverUrl: string) {
-  const raw = sessionStorage.getItem('hifi_auth');
-  if (!raw) return;
-  try {
-    const { username, password } = JSON.parse(raw);
-    if (username && password) {
-      configure(serverUrl, username, password);
-    }
-  } catch {}
 }
 
 function generateSalt(): string {
@@ -54,19 +37,18 @@ function generateSalt(): string {
   return Array.from(arr, b => b.toString(16).padStart(2, '0')).join('');
 }
 
-/** Generate fresh auth params for a single request */
 function makeAuthParams(): { token: string; salt: string } {
   const salt = generateSalt();
-  const token = md5(password + salt);
+  const token = md5(_password + salt);
   return { token, salt };
 }
 
 export function getConfig() {
-  return { baseUrl, username };
+  return { baseUrl:  '/rest', username: _username };
 }
 
 export function isConfigured() {
-  return !!(baseUrl && username && password);
+  return !!(_username && _password);
 }
 
 // ---- auth query string ----
@@ -74,7 +56,7 @@ export function isConfigured() {
 
 function authQueryParams(): string {
   const { token, salt } = makeAuthParams();
-  return `u=${encodeURIComponent(username)}&t=${token}&s=${salt}&v=${API_VERSION}&c=${CLIENT_NAME}&f=json`;
+  return `u=${encodeURIComponent(_username)}&t=${token}&s=${salt}&v=${API_VERSION}&c=${CLIENT_NAME}&f=json`;
 }
 
 // ---- fetch helper ----
@@ -85,7 +67,7 @@ async function request(endpoint: string, params: Record<string, string | number 
     .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
     .join('&');
 
-  const url = `${baseUrl}/${endpoint}?${authQueryParams()}${qs ? '&' + qs : ''}`;
+  const url = `/rest/${endpoint}?${authQueryParams()}${qs ? '&' + qs : ''}`;
 
   const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -105,25 +87,23 @@ async function request(endpoint: string, params: Record<string, string | number 
 export function getStreamUrl(id: string, opts?: { maxBitRate?: number }) {
   const p = [`id=${encodeURIComponent(id)}`];
   if (opts?.maxBitRate) p.push(`maxBitRate=${opts.maxBitRate}`);
-  return `${baseUrl}/stream.view?${authQueryParams()}&${p.join('&')}`;
+  return `/rest/stream.view?${authQueryParams()}&${p.join('&')}`;
 }
 
 // Session-stable salt for cover art URLs — makes getCoverArtUrl deterministic
 // so client-side image caching works (same coverArt ID → same URL → cache hit).
 // Cover art is not sensitive; replay risk is negligible.
-let _coverSalt: string | null = null;
-let _coverToken: string | null = null;
 function coverAuthParams(): string {
   if (!_coverSalt || !_coverToken) {
     _coverSalt = generateSalt();
-    _coverToken = md5(password + _coverSalt);
+    _coverToken = md5(_password + _coverSalt);
   }
-  return `u=${encodeURIComponent(username)}&t=${_coverToken}&s=${_coverSalt}&v=${API_VERSION}&c=${CLIENT_NAME}&f=json`;
+  return `u=${encodeURIComponent(_username)}&t=${_coverToken}&s=${_coverSalt}&v=${API_VERSION}&c=${CLIENT_NAME}&f=json`;
 }
 
 export function getCoverArtUrl(id: string | undefined, size = 300): string {
   if (!id) return '';
-  return `${baseUrl}/getCoverArt.view?${coverAuthParams()}&id=${encodeURIComponent(id)}&size=${size}`;
+  return `/rest/getCoverArt.view?${coverAuthParams()}&id=${encodeURIComponent(id)}&size=${size}`;
 }
 
 // ---- API methods ----
@@ -179,7 +159,7 @@ export async function createPlaylist(name: string, songIds?: string[]): Promise<
   if (songIds?.length) {
     songIdParams = songIds.map(id => `&songId=${encodeURIComponent(id)}`).join('');
   }
-  const url = `${baseUrl}/createPlaylist.view?${authQueryParams()}&name=${encodeURIComponent(name)}${songIdParams}`;
+  const url = `/rest/createPlaylist.view?${authQueryParams()}&name=${encodeURIComponent(name)}${songIdParams}`;
   const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
