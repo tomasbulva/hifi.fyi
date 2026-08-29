@@ -174,6 +174,11 @@ export default function Login() {
                     style={{ background: 'var(--color-primary)', color: '#3C0091', minHeight: '50px' }}>
               {busy ? 'Setting up…' : 'Connect & Create Account'}
             </button>
+            <button type="button" onClick={() => setView('login')}
+                    className="text-xs underline cursor-pointer self-center mt-1"
+                    style={{ color: 'var(--color-on-surface-variant)', opacity: 0.6 }}>
+              I already have an account
+            </button>
           </>
         )}
 
