@@ -125,12 +125,13 @@ test.describe('hifi Player — Visual Tests', () => {
     // Should see the hifi logo
     await expect(page.locator('text=hifi').first()).toBeVisible({ timeout: 5000 });
 
-    // Onboarding screen: Navidrome URL input, username, 2x password fields
+    // Onboarding screen: Navidrome URL input, 2x text fields (navidrome user + hifi user), 3x password fields
     await expect(page.locator('input[type="url"]')).toBeVisible({ timeout: 5000 });
-    await expect(page.locator('input[type="text"]')).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('input[type="text"]').first()).toBeVisible({ timeout: 5000 });
     const pwFields = page.locator('input[type="password"]');
     await expect(pwFields.nth(0)).toBeVisible({ timeout: 5000 });
     await expect(pwFields.nth(1)).toBeVisible({ timeout: 5000 });
+    await expect(pwFields.nth(2)).toBeVisible({ timeout: 5000 });
 
     // Should see submit button
     await expect(page.locator('button[type="submit"]')).toBeVisible({ timeout: 5000 });

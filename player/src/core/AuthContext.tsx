@@ -16,10 +16,10 @@ interface AuthState {
 interface AuthContextValue extends AuthState {
   /** Navidrome username (from the session). */
   username: string;
-  /** First-time onboarding: store Navidrome credentials + app password on the server. */
-  setup: (navidromeUrl: string, navidromeUsername: string, navidromePassword: string, appPassword: string) => Promise<boolean>;
-  /** Login with app password (Navidrome URL is already stored in the backend). */
-  login: (appPassword: string) => Promise<boolean>;
+  /** First-time onboarding: store Navidrome credentials + app credentials on the server. */
+  setup: (navidromeUrl: string, navidromeUsername: string, navidromePassword: string, appUsername: string, appPassword: string) => Promise<boolean>;
+  /** Login with hifi username + password. */
+  login: (appUsername: string, appPassword: string) => Promise<boolean>;
   /** Clear the session cookie and stop playback. */
   logout: () => void;
 }
@@ -79,12 +79,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => { cancelled = true; };
   }, []);
 
-  const setup = useCallback(async (navidromeUrl: string, navidromeUsername: string, navidromePassword: string, appPassword: string): Promise<boolean> => {
+  const setup = useCallback(async (navidromeUrl: string, navidromeUsername: string, navidromePassword: string, appUsername: string, appPassword: string): Promise<boolean> => {
     try {
       const res = await fetch('/api/auth/setup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ navidromeUrl, navidromeUsername, navidromePassword, appPassword }),
+        body: JSON.stringify({ navidromeUrl, navidromeUsername, navidromePassword, appUsername, appPassword }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -94,7 +94,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       memNavidromeUser = navidromeUsername;
       memNavidromePass = navidromePassword;
       configureApi('', navidromeUsername, navidromePassword);
-      setState({ isLoggedIn: true, username: memNavidromeUser, setupDone: true, loading: false, error: null });
+      setState({ isLoggedIn: true, username: appUsername, setupDone: true, loading: false, error: null });
       return true;
     } catch {
       setState(s => ({ ...s, error: 'Server unreachable', loading: false }));
@@ -102,16 +102,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const login = useCallback(async (appPassword: string): Promise<boolean> => {
+  const login = useCallback(async (appUsername: string, appPassword: string): Promise<boolean> => {
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ appPassword }),
+        body: JSON.stringify({ appUsername, appPassword }),
       });
       const data = await res.json();
       if (!res.ok) {
-        setState(s => ({ ...s, error: data.error || 'Invalid password', loading: false }));
+        setState(s => ({ ...s, error: data.error || 'Invalid username or password', loading: false }));
         return false;
       }
       // Re-fetch session to get Navidrome credentials
@@ -122,7 +122,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         memNavidromePass = sessionData.navidromePassword;
         configureApi('', sessionData.navidromeUsername, sessionData.navidromePassword);
       }
-      setState({ isLoggedIn: true, username: memNavidromeUser, setupDone: true, loading: false, error: null });
+      setState({ isLoggedIn: true, username: sessionData.appUsername || memNavidromeUser, setupDone: true, loading: false, error: null });
       return true;
     } catch {
       setState(s => ({ ...s, error: 'Server unreachable', loading: false }));

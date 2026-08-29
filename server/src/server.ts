@@ -198,15 +198,15 @@ app.get('/api/auth/session', (req, res) => {
 
 // First-time setup — stores Navidrome config + app password, creates session
 app.post('/api/auth/setup', (req, res) => {
-  const { navidromeUrl, navidromeUsername, navidromePassword, appPassword } = req.body;
-  if (!navidromeUrl || !navidromeUsername || !navidromePassword || !appPassword) {
-    return res.status(400).json({ error: 'Missing fields: navidromeUrl, navidromeUsername, navidromePassword, appPassword' });
+  const { navidromeUrl, navidromeUsername, navidromePassword, appUsername, appPassword } = req.body;
+  if (!navidromeUrl || !navidromeUsername || !navidromePassword || !appUsername || !appPassword) {
+    return res.status(400).json({ error: 'Missing fields: navidromeUrl, navidromeUsername, navidromePassword, appUsername, appPassword' });
   }
   if (db.getAppConfig()) {
     return res.status(409).json({ error: 'Already set up. Log in instead.' });
   }
 
-  crypto.scrypt(appPassword, 'hifi_salt_' + navidromeUsername, 64, (err, hash) => {
+  crypto.scrypt(appPassword, 'hifi_salt_' + appUsername, 64, (err, hash) => {
     if (err) {
       console.error('[hifi] scrypt error:', err);
       return res.status(500).json({ error: 'Internal error' });
@@ -217,7 +217,7 @@ app.post('/api/auth/setup', (req, res) => {
       navidromeUrl,
       navidromeUsername,
       navidromePassword,
-      appUsername: navidromeUsername,
+      appUsername,
       appPasswordHash: hashStr,
     });
 
@@ -243,15 +243,19 @@ app.post('/api/auth/setup', (req, res) => {
   });
 });
 
-// Login — verify app password, create session
+// Login — verify app username + password, create session
 app.post('/api/auth/login', (req, res) => {
-  const { appPassword } = req.body;
-  if (!appPassword) return res.status(400).json({ error: 'Missing appPassword' });
+  const { appUsername, appPassword } = req.body;
+  if (!appUsername || !appPassword) return res.status(400).json({ error: 'Missing appUsername or appPassword' });
 
   const config = db.getAppConfig();
-  if (!config) return res.status(404).json({ error: 'Not set up. Run /api/auth/setup first.' });
+  if (!config) return res.status(404).json({ error: 'Not set up. Run setup first.' });
 
-  crypto.scrypt(appPassword, 'hifi_salt_' + config.app_username, 64, (err, hash) => {
+  if (appUsername !== config.app_username) {
+    return res.status(401).json({ error: 'Unknown username' });
+  }
+
+  crypto.scrypt(appPassword, 'hifi_salt_' + appUsername, 64, (err, hash) => {
     if (err) {
       console.error('[hifi] scrypt error:', err);
       return res.status(500).json({ error: 'Internal error' });
