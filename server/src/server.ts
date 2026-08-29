@@ -309,6 +309,47 @@ app.get('/api/auth/ban-status', (req, res) => {
   res.json(ban);
 });
 
+// Update Navidrome server config — tests connection before saving
+app.put('/api/auth/server-config', async (req, res) => {
+  const { navidromeUrl, navidromeUsername, navidromePassword } = req.body;
+  if (!navidromeUrl || !navidromeUsername || !navidromePassword) {
+    return res.status(400).json({ error: 'Missing fields: navidromeUrl, navidromeUsername, navidromePassword' });
+  }
+
+  // Test the connection before saving
+  try {
+    const testClient = new SubsonicClient(navidromeUrl, navidromeUsername, navidromePassword);
+    const pingResult = await testClient.ping();
+    if (!pingResult) {
+      return res.json({ ok: false, error: 'Could not connect to Navidrome — check URL and credentials' });
+    }
+  } catch {
+    return res.json({ ok: false, error: 'Could not connect to Navidrome — check URL' });
+  }
+
+  // Update DB config
+  const config = db.getAppConfig();
+  if (!config) return res.status(404).json({ error: 'Not set up. Run /api/auth/setup first.' });
+
+  db.saveAppConfig({
+    navidromeUrl,
+    navidromeUsername,
+    navidromePassword,
+    appUsername: config.app_username,
+    appPasswordHash: config.app_password_hash,
+  });
+
+  // Reconfigure proxy + scanner
+  configureNavidrome(navidromeUrl, navidromeUsername, navidromePassword);
+
+  // Trigger rescan
+  if (scanner && !scanner.isScanning) {
+    scanner.scan().catch(err => console.error('[hifi] Server config rescan failed:', err));
+  }
+
+  res.json({ ok: true, navidromeUrl });
+});
+
 app.get('/api/bans', sessionMiddleware, (req, res) => {
   res.json({ bans: getBanList() });
 });
@@ -430,7 +471,7 @@ app.get('/api/songs', sessionMiddleware, (req, res) => {
     songs = songs.slice(0, limit);
   }
 
-  res.json({ songs });
+  res.json({ songs: songs.map(s => CompanionDB.toApiSong(s)) });
 });
 
 app.get('/api/playlist', sessionMiddleware, (req, res) => {
@@ -453,7 +494,7 @@ app.get('/api/playlist', sessionMiddleware, (req, res) => {
     return res.status(400).json({ error: 'Specify mood, era, or topRated' });
   }
 
-  res.json({ songs });
+  res.json({ songs: songs.map(s => CompanionDB.toApiSong(s)) });
 });
 
 app.get('/api/radio', sessionMiddleware, async (req, res) => {
@@ -525,7 +566,7 @@ app.get('/api/daily-mixes', sessionMiddleware, (req, res) => {
 app.get('/api/daily-mix/:id', sessionMiddleware, (req, res) => {
   const mix = db.getDailyMix(req.params.id);
   if (!mix) return res.status(404).json({ error: 'Mix not found' });
-  res.json(mix);
+  res.json({ ...mix, songs: mix.songs.map((s: any) => CompanionDB.toApiSong(s)) });
 });
 
 // ── Artist Intro endpoint ──
@@ -582,10 +623,11 @@ app.get('/api/genres', sessionMiddleware, (req, res) => {
 app.get('/api/genre-mix/:genre', sessionMiddleware, (req, res) => {
   const genre = decodeURIComponent(req.params.genre);
   const songs = db.getSongsByGenre(genre, 50);
-  // Enrich with cached data
+  // Normalize to SubsonicSong format + enrich with cached data
   const enriched = songs.map(s => {
+    const apiSong = CompanionDB.toApiSong(s);
     const cached = db.getSongById(s.id);
-    return { ...s, userRating: cached?.user_rating ?? 0 };
+    return { ...apiSong, userRating: cached?.user_rating ?? 0 };
   });
   // Sort by rating desc, then random
   enriched.sort((a, b) => (b.userRating ?? 0) - (a.userRating ?? 0));

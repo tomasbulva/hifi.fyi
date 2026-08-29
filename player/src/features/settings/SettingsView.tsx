@@ -13,11 +13,57 @@ export default function SettingsView() {
   const [persistQueue, setPersistQueue] = useState(true);
   const [saved, setSaved] = useState(false);
 
+  // Server config state
+  const [serverUrl, setServerUrl] = useState('');
+  const [serverUser, setServerUser] = useState('');
+  const [serverPass, setServerPass] = useState('');
+  const [serverBusy, setServerBusy] = useState(false);
+  const [serverResult, setServerResult] = useState<'idle' | 'ok' | 'fail'>('idle');
+  const [serverError, setServerError] = useState('');
+
   useEffect(() => {
     setSonosProxyUrl(settings.sonosProxyUrl || getProxyUrl());
     setSonosProxyApiKey(settings.sonosProxyApiKey || '');
     setPersistQueue(settings.persistQueue !== false);
+    // Pre-load current server config
+    fetch('/api/proxy-config').then(r => r.json()).then(d => {
+      setServerUrl(d.navidromeUrl || '');
+    }).catch(() => {});
+    fetch('/api/auth/session').then(r => r.json()).then(d => {
+      setServerUser(d.navidromeUsername || '');
+    }).catch(() => {});
   }, [settings]);
+
+  async function handleTestAndSaveServer() {
+    if (!serverUrl || !serverUser || !serverPass) {
+      setServerResult('fail');
+      setServerError('All fields are required');
+      return;
+    }
+    setServerBusy(true);
+    setServerResult('idle');
+    setServerError('');
+    try {
+      const res = await fetch('/api/auth/server-config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ navidromeUrl: serverUrl, navidromeUsername: serverUser, navidromePassword: serverPass }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setServerResult('ok');
+        toast.show('Navidrome server updated');
+      } else {
+        setServerResult('fail');
+        setServerError(data.error || 'Connection failed');
+      }
+    } catch {
+      setServerResult('fail');
+      setServerError('Server unreachable');
+    } finally {
+      setServerBusy(false);
+    }
+  }
 
   function handleSave() {
     updateSettings({ sonosProxyUrl, sonosProxyApiKey, persistQueue });
@@ -38,6 +84,64 @@ export default function SettingsView() {
         <h1 className="mb-6 text-xl font-bold" style={{ color: 'var(--color-text)' }}>
           Settings
         </h1>
+
+        {/* Navidrome Server Config */}
+        <section className="mb-8">
+          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider" style={{ color: 'var(--color-text-muted)' }}>
+            Navidrome Server
+          </h2>
+          <div className="space-y-4 rounded-md border border-border bg-surface p-4">
+            <div>
+              <label className="mb-1 block text-small font-medium" style={{ color: 'var(--color-text)' }}>
+                Server URL
+              </label>
+              <input type="url" value={serverUrl} onChange={e => { setServerUrl(e.target.value); setServerResult('idle'); }}
+                     placeholder="https://music.hifi.fyi"
+                     className="w-full rounded-sm border border-border bg-background px-3 py-2 text-small"
+                     style={{ color: 'var(--color-text)' }} />
+            </div>
+            <div className="flex gap-4">
+              <div className="flex-1">
+                <label className="mb-1 block text-small font-medium" style={{ color: 'var(--color-text)' }}>
+                  Username
+                </label>
+                <input type="text" value={serverUser} onChange={e => { setServerUser(e.target.value); setServerResult('idle'); }}
+                       placeholder="Navidrome username"
+                       className="w-full rounded-sm border border-border bg-background px-3 py-2 text-small"
+                       style={{ color: 'var(--color-text)' }} />
+              </div>
+              <div className="flex-1">
+                <label className="mb-1 block text-small font-medium" style={{ color: 'var(--color-text)' }}>
+                  Password
+                </label>
+                <input type="password" value={serverPass} onChange={e => { setServerPass(e.target.value); setServerResult('idle'); }}
+                       placeholder="Navidrome password"
+                       className="w-full rounded-sm border border-border bg-background px-3 py-2 text-small"
+                       style={{ color: 'var(--color-text)' }} />
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <button onClick={handleTestAndSaveServer} disabled={serverBusy}
+                      className="rounded-sm px-4 py-2 text-small font-semibold border-none cursor-pointer disabled:opacity-50"
+                      style={{ background: 'var(--color-primary)', color: '#fff' }}>
+                {serverBusy ? 'Testing…' : 'Test & Save'}
+              </button>
+              {serverResult === 'ok' && (
+                <span className="flex items-center gap-1 text-sm font-semibold" style={{ color: '#4caf50' }}>
+                  <span className="material-symbols-outlined text-lg">check_circle</span> Connected
+                </span>
+              )}
+              {serverResult === 'fail' && (
+                <span className="flex items-center gap-1 text-sm font-semibold" style={{ color: '#f44336' }}>
+                  <span className="material-symbols-outlined text-lg">cancel</span> {serverError}
+                </span>
+              )}
+            </div>
+            <p className="text-xs" style={{ color: 'var(--color-text-muted)' }}>
+              Changing the Navidrome server will trigger a library rescan.
+            </p>
+          </div>
+        </section>
 
         {/* Casting section */}
         <section className="mb-8">
@@ -99,7 +203,7 @@ export default function SettingsView() {
                 </span>
               </div>
               <button
-                onClick={() => setPersistQueue(!persistQueue)}
+                onClick={() => { setPersistQueue(!persistQueue); }}
                 className={`relative w-10 h-5 rounded-full transition-colors border-none cursor-pointer flex-shrink-0 ${persistQueue ? 'bg-primary' : 'bg-on-surface-variant/30'}`}
               >
                 <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${persistQueue ? 'translate-x-5' : 'translate-x-0'}`} />

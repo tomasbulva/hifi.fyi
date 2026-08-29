@@ -282,6 +282,27 @@ export class CompanionDB {
     return { data: row.data, contentType: row.content_type };
   }
 
+  /** Convert a DB row into a SubsonicSong-compatible object for API responses. */
+  static toApiSong(row: CachedSong): any {
+    return {
+      id: row.id,
+      title: row.title,
+      artist: row.artist,
+      album: row.album,
+      albumId: row.album_id,
+      duration: row.duration,
+      suffix: row.suffix,
+      bitRate: row.bit_rate,
+      coverArt: row.cover_art || '',
+      year: row.year,
+      genre: row.genre,
+      userRating: row.user_rating ?? 0,
+      starred: row.starred ? 1 : 0,
+      playCount: row.play_count ?? 0,
+      mood: row.mood,
+    };
+  }
+
   savePlaylistCover(id: string, data: string, contentType: string): void {
     this.db.prepare('INSERT OR REPLACE INTO playlist_covers (id, data, content_type, created_at) VALUES (?, ?, ?, ?)').run(id, data, contentType, new Date().toISOString());
   }
