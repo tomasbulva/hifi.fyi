@@ -95,16 +95,14 @@ export default function Login() {
                        className="rounded-sm border border-border bg-background px-3 py-2.5 text-sm"
                        style={{ color: 'var(--color-text)' }} />
 
-                <div className="flex gap-3">
-                  <input type="text" value={navidromeUsername} onChange={e => setNavidromeUsername(e.target.value)}
-                         placeholder="Username"
-                         className="flex-1 rounded-sm border border-border bg-background px-3 py-2.5 text-sm"
-                         style={{ color: 'var(--color-text)' }} />
-                  <input type="password" value={navidromePassword} onChange={e => setNavidromePassword(e.target.value)}
-                         placeholder="Password"
-                         className="flex-1 rounded-sm border border-border bg-background px-3 py-2.5 text-sm"
-                         style={{ color: 'var(--color-text)' }} />
-                </div>
+                <input type="text" value={navidromeUsername} onChange={e => setNavidromeUsername(e.target.value)}
+                       placeholder="Username"
+                       className="rounded-sm border border-border bg-background px-3 py-2.5 text-sm"
+                       style={{ color: 'var(--color-text)' }} />
+                <input type="password" value={navidromePassword} onChange={e => setNavidromePassword(e.target.value)}
+                       placeholder="Password"
+                       className="rounded-sm border border-border bg-background px-3 py-2.5 text-sm"
+                       style={{ color: 'var(--color-text)' }} />
 
                 <div className="pt-3 pb-1 border-b border-border">
                   <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--color-text-muted)' }}>
