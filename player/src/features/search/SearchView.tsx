@@ -8,6 +8,7 @@ import { SongTable } from '../../features/library/SongTable';
 import { CachedCover } from '../../components/CachedCover';
 
 import { slugify } from '../../core/format';
+import { track as trackEvent } from '../../core/analytics';
 
 export default function SearchView() {
   const {
@@ -23,7 +24,10 @@ export default function SearchView() {
     setQuery(q);
     clearTimeout(searchTimeout.current);
     searchTimeout.current = setTimeout(() => {
-      if (q.trim()) search(q);
+      if (q.trim()) {
+        trackEvent('search', { query: q.trim().slice(0, 64) });
+        search(q);
+      }
     }, 300);
   }, [search]);
 

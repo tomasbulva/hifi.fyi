@@ -142,6 +142,11 @@ export async function unstar(id: string) {
   return request('unstar.view', { id });
 }
 
+/** Rate a song 0-5 (0 clears the rating). */
+export async function setRating(id: string, rating: number) {
+  return request('setRating.view', { id, rating });
+}
+
 // Playlists
 export async function getPlaylists(username?: string): Promise<SubsonicPlaylist[]> {
   const sr = await request('getPlaylists.view', { username });

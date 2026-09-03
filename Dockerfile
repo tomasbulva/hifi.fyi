@@ -27,7 +27,7 @@ COPY --from=server-build /app/server/dist ./dist
 COPY --from=frontend-build /app/player/dist ./player/dist
 
 # Copy favicon
-COPY player/favicon.svg ./player/dist/
+COPY player/public/favicon.svg ./player/dist/
 
 RUN mkdir -p /data
 

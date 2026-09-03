@@ -17,11 +17,15 @@
  *   DB_PATH              — SQLite path (default ./data/companion.db)
  *   PROXY_API_KEY        — shared secret for companion + sonos endpoints
  *   NAVIDROME_LAN_URL    — rewrite stream URLs for LAN access (Sonos)
+ *   SENTRY_DSN           — Sentry error reporting (optional)
+ *   RELEASE              — release tag for Sentry (default hifi@dev)
+ *   UMAMI_WEBSITE_ID     — Umami website ID; enables frontend analytics (optional)
+ *   UMAMI_URL            — Umami base URL (default http://umami:3000)
  */
 
 import express from 'express';
 import { createProxyMiddleware } from 'http-proxy-middleware';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dgram from 'dgram';
@@ -49,6 +53,7 @@ import { SubsonicClient } from './subsonic.js';
 import { Scanner } from './scanner.js';
 import { setLastfmKey, getTrackInfo, listenersToRating } from './lastfm.js';
 import { initBanDb, recordFailedAttempt, recordSuccessfulLogin, isBanned, getBanList, unbanIp, clearAllBans, addManualBan } from './banList.js';
+import * as Sentry from '@sentry/node';
 
 // ── Config ──
 
@@ -63,10 +68,32 @@ const DB_PATH = process.env.DB_PATH || './data/companion.db';
 const API_KEY = process.env.PROXY_API_KEY || '';
 const NAVIDROME_LAN_URL = (process.env.NAVIDROME_LAN_URL || '').replace(/\/+$/, '');
 
+// ── Observability ──
+
+const SENTRY_DSN = process.env.SENTRY_DSN || '';
+const RELEASE = process.env.RELEASE || 'hifi@dev';
+const UMAMI_WEBSITE_ID = process.env.UMAMI_WEBSITE_ID || '';
+const UMAMI_URL = (process.env.UMAMI_URL || 'http://umami:3000').replace(/\/+$/, '');
+
+if (SENTRY_DSN) {
+  Sentry.init({
+    dsn: SENTRY_DSN,
+    release: RELEASE,
+    environment: process.env.NODE_ENV || 'production',
+    // Sonos discovery polls and last.fm enrichment fail benignly all the time
+    // — those are caught and ignored locally, so only real 500s land here.
+    tracesSampleRate: 0.1,
+  });
+  console.log('[hifi] Sentry error reporting: enabled');
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 app.use(express.json());
+// Behind Cloudflare Tunnel (cloudflared) — trust private-network hops so
+// req.ip is the real client IP for the ban middleware, not the tunnel's.
+app.set('trust proxy', ['loopback', 'linklocal', 'uniquelocal']);
 
 // ── Init ban database (shares DB_PATH with companion) ──
 initBanDb(DB_PATH);
@@ -136,7 +163,7 @@ if (appConfig) {
   const scanStatus = db.getScanStatus();
   if (scanStatus.total_songs === 0) {
     console.log('[hifi] Companion: auto-scanning (no cached songs)...');
-    (scanner as unknown as Scanner).scan().catch((err: Error) => console.error('[hifi] Auto-scan failed:', err));
+    (scanner as unknown as Scanner).scan().catch((err: Error) => { Sentry.captureException(err); console.error('[hifi] Auto-scan failed:', err); });
   } else {
     console.log(`[hifi] Companion: ${scanStatus.total_songs.toLocaleString()} cached songs`);
   }
@@ -226,7 +253,7 @@ app.post('/api/auth/setup', (req, res) => {
 
     // Start scanning in background
     if (scanner && !scanner.isScanning) {
-      scanner.scan().catch(err => console.error('[hifi] Setup scan failed:', err));
+      scanner.scan().catch(err => { Sentry.captureException(err); console.error('[hifi] Setup scan failed:', err); })
     }
 
     // Create session token
@@ -348,7 +375,7 @@ app.put('/api/auth/server-config', async (req, res) => {
 
   // Trigger rescan
   if (scanner && !scanner.isScanning) {
-    scanner.scan().catch(err => console.error('[hifi] Server config rescan failed:', err));
+    scanner.scan().catch(err => { Sentry.captureException(err); console.error('[hifi] Server config rescan failed:', err); })
   }
 
   res.json({ ok: true, navidromeUrl });
@@ -388,15 +415,60 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// ── Observability config for the frontend (public — no secrets) ──
+
+app.get('/api/analytics-config', (req, res) => {
+  res.json({
+    analytics: UMAMI_WEBSITE_ID ? { websiteId: UMAMI_WEBSITE_ID } : null,
+    sentryDsn: SENTRY_DSN || undefined,
+    release: RELEASE,
+  });
+});
+
+// Analytics event proxy — frontend posts to same-origin, we forward to Umami.
+// Fire-and-forget: analytics must never break the app or spam errors.
+app.post('/api/analytics/send', express.json({ limit: '16kb' }), (req, res) => {
+  if (!UMAMI_WEBSITE_ID) return res.status(204).end();
+  fetch(`${UMAMI_URL}/api/send`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent': req.headers['user-agent'] || 'hifi-server',
+      'X-Forwarded-For': req.ip || '',
+    },
+    body: JSON.stringify(req.body),
+  })
+    .then(r => res.status(r.ok ? 202 : 502).end())
+    .catch(() => res.status(202).end()); // swallow Umami downtime
+});
+
 // Get rating for a specific song (from companion DB + last.fm)
 app.get('/api/song/:id/rating', sessionMiddleware, async (req, res) => {
   const songId = req.params.id;
   const cached = db.getSongById(songId);
-  
+
   // Start with companion DB rating
   let rating = cached?.user_rating ?? 0;
   let starred = !!cached?.starred;
-  
+
+  // Read the rating live from Navidrome — the DB cache only updates on scans,
+  // so a rating set in the player would otherwise read back stale until the
+  // next scan. Sync any change back into the cache.
+  if (subsonicClient) {
+    try {
+      const song = await subsonicClient.getSong(songId);
+      if (song.userRating !== undefined) {
+        rating = song.userRating;
+        starred = !!song.starred;
+        if (cached && (song.userRating !== cached.user_rating || !!song.starred !== !!cached.starred)) {
+          db.updateSongRating(songId, song.userRating, !!song.starred);
+        }
+      }
+    } catch {
+      // Navidrome unavailable — fall back to cache below
+    }
+  }
+
   // If no user rating in DB, try last.fm
   if (rating === 0 && cached && LASTFM_API_KEY) {
     try {
@@ -445,7 +517,7 @@ app.get('/api/status', (req, res) => {
 app.post('/api/refresh', sessionMiddleware, async (req, res) => {
   if (!scanner) return res.status(503).json({ error: 'Navidrome not configured' });
   if (scanner.isScanning) return res.status(409).json({ error: 'Scan already in progress' });
-  scanner.scan().catch(err => console.error('[hifi] Scan failed:', err));
+  scanner.scan().catch(err => { Sentry.captureException(err); console.error('[hifi] Scan failed:', err); })
   res.json({ ok: true, message: 'Scan started' });
 });
 
@@ -537,7 +609,7 @@ app.get('/api/radio', sessionMiddleware, async (req, res) => {
     enriched.sort((a, b) => (b.userRating ?? 0) - (a.userRating ?? 0));
     res.json({ songs: enriched });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    Sentry.captureException(err); res.status(500).json({ error: err.message });
   }
 });
 
@@ -556,7 +628,7 @@ app.get('/api/next', sessionMiddleware, async (req, res) => {
     const random = await subsonicClient.getRandomSongs(1);
     res.json({ song: random[0] ?? null });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    Sentry.captureException(err); res.status(500).json({ error: err.message });
   }
 });
 
@@ -613,7 +685,7 @@ app.get('/api/artist-intro/:artistId', sessionMiddleware, async (req, res) => {
       trackCount: topTracks.length + discovery.length,
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    Sentry.captureException(err); res.status(500).json({ error: err.message });
   }
 });
 
@@ -671,6 +743,81 @@ app.get('/api/playlist-cover/:id', sessionMiddleware, async (req, res) => {
   db.savePlaylistCover(id, data, 'image/svg+xml');
   res.set('Content-Type', 'image/svg+xml');
   res.send(Buffer.from(data, 'base64'));
+});
+
+// ── Artist image fallback ──
+// Navidrome has no upload API and the music library isn't writable from this
+// server, so we can't persist artist art into Navidrome itself. Instead, the
+// frontend asks this endpoint for artists without art; we look the artist up
+// on Deezer (free, no API key), cache the image on disk, and serve it.
+// A 404 means "no image found" — the frontend falls back to an initials avatar.
+
+const ARTIST_IMAGE_DIR = path.join(dataDir, 'artist-images');
+if (!existsSync(ARTIST_IMAGE_DIR)) mkdirSync(ARTIST_IMAGE_DIR, { recursive: true });
+
+// In-memory negative cache: don't re-hit Deezer for known imageless artists
+// (resets on restart — acceptable, keeps the code simple).
+const artistImageMisses = new Set<string>();
+const artistImageInflight = new Map<string, Promise<string | null>>();
+
+function artistImageFile(artistId: string): string {
+  // artistId comes from a URL param — restrict to safe filename characters
+  const safe = artistId.replace(/[^a-zA-Z0-9_-]/g, '');
+  return path.join(ARTIST_IMAGE_DIR, `${safe}.jpg`);
+}
+
+async function fetchArtistImage(artistId: string, name: string): Promise<string | null> {
+  const file = artistImageFile(artistId);
+  if (!artistId || !name) return null;
+  if (existsSync(file)) return file;
+  if (artistImageMisses.has(artistId)) return null;
+
+  let inflight = artistImageInflight.get(artistId);
+  if (!inflight) {
+    inflight = (async () => {
+      try {
+        const q = encodeURIComponent(name);
+        const searchRes = await fetch(`https://api.deezer.com/search/artist?q=${q}&limit=1`, {
+          signal: AbortSignal.timeout(10000),
+        });
+        if (!searchRes.ok) return null;
+        const search = await searchRes.json() as { data?: { picture_big?: string; picture_medium?: string }[] };
+        const url = search.data?.[0]?.picture_big || search.data?.[0]?.picture_medium;
+        if (!url) return null;
+
+        const imgRes = await fetch(url, { signal: AbortSignal.timeout(15000) });
+        if (!imgRes.ok) return null;
+        const buf = Buffer.from(await imgRes.arrayBuffer());
+        // Tiny responses are Deezer's generic grey placeholder — treat as "no image"
+        if (buf.length < 2000) return null;
+        writeFileSync(file, buf);
+        return file;
+      } catch (err) {
+        Sentry.captureException(err);
+        return null;
+      } finally {
+        artistImageInflight.delete(artistId);
+      }
+    })();
+    artistImageInflight.set(artistId, inflight);
+  }
+
+  const result = await inflight;
+  if (!result) artistImageMisses.add(artistId);
+  return result;
+}
+
+app.get('/api/artist-image/:artistId', sessionMiddleware, async (req, res) => {
+  const artistId = req.params.artistId.replace(/[^a-zA-Z0-9_-]/g, '');
+  const name = String(req.query.name || '').slice(0, 200);
+  if (!artistId) return res.status(400).json({ error: 'Invalid artist id' });
+
+  const file = await fetchArtistImage(artistId, name);
+  if (!file) return res.status(404).json({ error: 'No artist image found' });
+
+  res.set('Content-Type', 'image/jpeg');
+  res.set('Cache-Control', 'public, max-age=604800, immutable');
+  return res.sendFile(file);
 });
 
 // ── Sonos endpoints (/api/sonos/*) ──
@@ -903,7 +1050,7 @@ app.get('/api/sonos/discover', async (req, res) => {
     const { groups } = await discoverSonosGroups();
     res.json({ speakers: groups });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    Sentry.captureException(err); res.status(500).json({ error: err.message });
   }
 });
 
@@ -923,7 +1070,7 @@ app.get('/api/sonos/status', async (req, res) => {
       isPlaying: extractTag(transportXml, 'CurrentTransportState') === 'PLAYING',
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    Sentry.captureException(err); res.status(500).json({ error: err.message });
   }
 });
 
@@ -955,7 +1102,7 @@ app.post('/api/sonos/cast', sessionMiddleware, async (req, res) => {
 
     res.json({ ok: true, message: `Casting to ${ip}` });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    Sentry.captureException(err); res.status(500).json({ error: err.message });
   }
 });
 
@@ -965,7 +1112,7 @@ app.post('/api/sonos/pause', sessionMiddleware, async (req, res) => {
   try {
     await soapCall(ip, '/MediaRenderer/AVTransport/Control', 'urn:schemas-upnp-org:service:AVTransport:1', 'Pause', '<InstanceID>0</InstanceID>');
     res.json({ ok: true });
-  } catch (err: any) { res.status(500).json({ error: err.message }); }
+  } catch (err: any) { Sentry.captureException(err); res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/sonos/resume', sessionMiddleware, async (req, res) => {
@@ -974,7 +1121,7 @@ app.post('/api/sonos/resume', sessionMiddleware, async (req, res) => {
   try {
     await soapCall(ip, '/MediaRenderer/AVTransport/Control', 'urn:schemas-upnp-org:service:AVTransport:1', 'Play', '<InstanceID>0</InstanceID><Speed>1</Speed>');
     res.json({ ok: true });
-  } catch (err: any) { res.status(500).json({ error: err.message }); }
+  } catch (err: any) { Sentry.captureException(err); res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/sonos/stop', sessionMiddleware, async (req, res) => {
@@ -983,7 +1130,7 @@ app.post('/api/sonos/stop', sessionMiddleware, async (req, res) => {
   try {
     await soapCall(ip, '/MediaRenderer/AVTransport/Control', 'urn:schemas-upnp-org:service:AVTransport:1', 'Stop', '<InstanceID>0</InstanceID>');
     res.json({ ok: true });
-  } catch (err: any) { res.status(500).json({ error: err.message }); }
+  } catch (err: any) { Sentry.captureException(err); res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/sonos/seek', sessionMiddleware, async (req, res) => {
@@ -994,7 +1141,7 @@ app.post('/api/sonos/seek', sessionMiddleware, async (req, res) => {
     await soapCall(ip, '/MediaRenderer/AVTransport/Control', 'urn:schemas-upnp-org:service:AVTransport:1', 'Seek',
       `<InstanceID>0</InstanceID><Unit>REL_TIME</Unit><Target>${formatTimecode(positionSec)}</Target>`);
     res.json({ ok: true });
-  } catch (err: any) { res.status(500).json({ error: err.message }); }
+  } catch (err: any) { Sentry.captureException(err); res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/sonos/volume', sessionMiddleware, async (req, res) => {
@@ -1005,14 +1152,23 @@ app.post('/api/sonos/volume', sessionMiddleware, async (req, res) => {
     await soapCall(ip, '/MediaRenderer/RenderingControl/Control', 'urn:schemas-upnp-org:service:RenderingControl:1', 'SetVolume',
       `<InstanceID>0</InstanceID><Channel>Master</Channel><DesiredVolume>${Math.round(volume)}</DesiredVolume>`);
     res.json({ ok: true });
-  } catch (err: any) { res.status(500).json({ error: err.message }); }
+  } catch (err: any) { Sentry.captureException(err); res.status(500).json({ error: err.message }); }
 });
 
 // ── Static frontend ──
 // Serve the built React app from player/dist. In dev, Vite handles this.
 
-const frontendDist = path.resolve(__dirname, '../../player/dist');
-if (existsSync(frontendDist)) {
+// Express error handler — reports uncaught route errors to Sentry (no-op when
+// Sentry.init was skipped) and returns a 500.
+Sentry.setupExpressErrorHandler(app);
+
+// Container: server at /app/dist, frontend at /app/player/dist.
+// Dev (tsx): server at server/src, frontend at project/player/dist.
+const frontendDist = [
+  path.resolve(__dirname, '../player/dist'),
+  path.resolve(__dirname, '../../player/dist'),
+].find(p => existsSync(p));
+if (frontendDist) {
   app.use(express.static(frontendDist));
   // SPA fallback — all non-API, non-/rest routes serve index.html
   app.use((req, res, next) => {
@@ -1024,7 +1180,7 @@ if (existsSync(frontendDist)) {
   });
   console.log(`[hifi] Frontend: serving from ${frontendDist}`);
 } else {
-  console.warn(`[hifi] Frontend: player/dist not found at ${frontendDist} — build the player first`);
+  console.warn('[hifi] Frontend: player/dist not found — build the player first');
 }
 
 // ── Start ──

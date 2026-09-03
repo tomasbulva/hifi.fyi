@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useCallback, useRef, useEff
 import type { CastProvider, CastTarget, CastState } from './types';
 import { isGoogleCastAvailable } from './googleCastProvider';
 import { getProxyUrl } from './sonosProvider';
+import { reportError } from './errorReport';
 
 interface CastContextValue extends CastState {
   setProvider: (provider: CastProvider | null) => void;
@@ -110,6 +111,7 @@ export function CastProvider({ children }: { children: React.ReactNode }) {
         error: null,
       }));
     } catch (err) {
+      reportError(err, { source: 'cast.connect', target: target.name, targetType: target.type });
       setState(prev => ({ ...prev, error: `Failed to connect: ${err}` }));
     }
   }, []);

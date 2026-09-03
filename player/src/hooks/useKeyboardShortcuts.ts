@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { useMusic } from '../core/MusicContext';
+import { track as trackEvent } from '../core/analytics';
 
 export function useKeyboardShortcuts() {
   const { playback, resume, pause, nextTrack, prevTrack, toggleShuffle, toggleRepeat, setVolume, view, setView } = useMusic();
@@ -13,6 +14,7 @@ export function useKeyboardShortcuts() {
       switch (e.code) {
         case 'Space':
           e.preventDefault();
+          trackEvent('keyboard', { action: playback.isPlaying ? 'pause' : 'resume' });
           if (playback.isPlaying) pause(); else resume();
           break;
         case 'ArrowRight':

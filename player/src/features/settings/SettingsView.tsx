@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useSettings } from '../../core/SettingsContext';
 import { useAuth } from '../../core/AuthContext';
+import { reportError } from '../../core/errorReport';
 import { reloadProxyUrl, getProxyUrl } from '../../core/sonosProvider';
 import { useToast } from '../../components/Toast';
 
@@ -57,7 +58,8 @@ export default function SettingsView() {
         setServerResult('fail');
         setServerError(data.error || 'Connection failed');
       }
-    } catch {
+    } catch (e) {
+      reportError(e, { source: 'settings.testAndSaveServer' });
       setServerResult('fail');
       setServerError('Server unreachable');
     } finally {

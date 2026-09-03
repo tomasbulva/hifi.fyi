@@ -128,6 +128,11 @@ export class CompanionDB {
     });
   }
 
+  /** Sync a single rating change back into the cache (keeps /api/ratings fresh between scans). */
+  updateSongRating(id: string, rating: number, starred?: boolean): void {
+    this.db.prepare('UPDATE songs SET user_rating = ?, starred = COALESCE(?, starred) WHERE id = ?').run(rating, starred === undefined ? null : (starred ? 1 : 0), id);
+  }
+
   getHotSongs(minRating: number): string[] {
     let rows = this.db.prepare('SELECT id FROM songs WHERE user_rating >= ? ORDER BY user_rating DESC, play_count DESC').all(minRating) as { id: string }[];
     if (rows.length < 5) {

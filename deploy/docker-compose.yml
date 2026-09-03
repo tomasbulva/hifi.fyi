@@ -65,6 +65,12 @@ services:
       - HOT_THRESHOLD=${HOT_THRESHOLD:-5}
       - DB_PATH=/data/companion.db
       - NAVIDROME_LAN_URL=${NAVIDROME_LAN_URL:-}
+      # ── Observability ──
+      - SENTRY_DSN=${SENTRY_DSN:-}
+      - RELEASE=${RELEASE:-hifi@dev}
+      # Create a website in the Umami UI (http://<host>:3000), paste its ID here
+      - UMAMI_WEBSITE_ID=${UMAMI_WEBSITE_ID:-}
+      - UMAMI_URL=http://umami:3000
     ports:
       - "4321:4321"
     volumes:
@@ -86,3 +92,45 @@ services:
 networks:
   internal:
     driver: bridge
+
+  # ── Analytics (Umami) ──
+  # First boot: open http://<host>:3000, login (admin/umami), add a website,
+  # then set UMAMI_WEBSITE_ID in .env and restart hifi.
+  umami-db:
+    image: postgres:16-alpine
+    container_name: umami-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=umami
+      - POSTGRES_USER=umami
+      - POSTGRES_PASSWORD=${UMAMI_DB_PASSWORD:-umami}
+    volumes:
+      - ./umami-db:/var/lib/postgresql/data
+    networks:
+      - internal
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  umami:
+    image: ghcr.io/umami-software/umami:postgresql-latest
+    container_name: umami
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql://umami:${UMAMI_DB_PASSWORD:-umami}@umami-db:5432/umami
+      - DATABASE_TYPE=postgresql
+      # Generate: openssl rand -base64 32
+      - APP_SECRET=${UMAMI_APP_SECRET:-change-me-please}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - umami-db
+    networks:
+      - internal
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M

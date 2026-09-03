@@ -1,5 +1,7 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import { configure as configureApi, ping } from './api';
+import { track as trackEvent } from './analytics';
+import { reportError, reportMessage } from './errorReport';
 
 interface AuthState {
   /** True when the session cookie is valid and the user can access the player. */
@@ -50,30 +52,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     fetch('/api/auth/session', { credentials: 'same-origin' })
       .then(res => res.json())
-      .then((data: { loggedIn: boolean; setup: boolean; navidromeUsername?: string; navidromePassword?: string }) => {
+      .then((data: { loggedIn: boolean; setup: boolean; navidromeUsername?: string; navidromePassword?: string; appUsername?: string }) => {
         if (cancelled) return;
         if (data.loggedIn && data.navidromeUsername && data.navidromePassword) {
           memNavidromeUser = data.navidromeUsername;
           memNavidromePass = data.navidromePassword;
           configureApi('', data.navidromeUsername, data.navidromePassword);
+          // Player account name (falls back to Navidrome user for legacy sessions)
+          const appUser = data.appUsername || memNavidromeUser;
           // Verify the Navidrome connection works
           ping().then(ok => {
             if (cancelled) return;
             if (ok) {
-              setState({ isLoggedIn: true, username: memNavidromeUser, setupDone: true, loading: false, error: null });
+              setState({ isLoggedIn: true, username: appUser, setupDone: true, loading: false, error: null });
             } else {
               // Session is valid but Navidrome is unreachable (server might be down)
-              setState({ isLoggedIn: true, username: memNavidromeUser, setupDone: true, loading: false, error: null });
+              setState({ isLoggedIn: true, username: appUser, setupDone: true, loading: false, error: null });
             }
           }).catch(() => {
             if (cancelled) return;
-            setState({ isLoggedIn: true, username: memNavidromeUser, setupDone: true, loading: false, error: null });
+            setState({ isLoggedIn: true, username: appUser, setupDone: true, loading: false, error: null });
           });
         } else {
           setState({ isLoggedIn: false, setupDone: data.setup, username: '', loading: false, error: null });
         }
       })
-      .catch(() => {
+      .catch((e) => {
+        reportMessage('Session check failed — server unreachable', { error: String(e) });
         if (!cancelled) setState({ isLoggedIn: false, setupDone: false, username: '', loading: false, error: 'Server unreachable' });
       });
     return () => { cancelled = true; };
@@ -95,8 +100,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       memNavidromePass = navidromePassword;
       configureApi('', navidromeUsername, navidromePassword);
       setState({ isLoggedIn: true, username: appUsername, setupDone: true, loading: false, error: null });
+      trackEvent('auth.setup', { username: appUsername });
       return true;
-    } catch {
+    } catch (e) {
+      reportError(e, { source: 'auth.setup' });
       setState(s => ({ ...s, error: 'Server unreachable', loading: false }));
       return false;
     }
@@ -111,6 +118,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
       const data = await res.json();
       if (!res.ok) {
+        trackEvent('auth.login_failed', { reason: data.error || 'invalid_credentials' });
         setState(s => ({ ...s, error: data.error || 'Invalid username or password', loading: false }));
         return false;
       }
@@ -123,8 +131,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         configureApi('', sessionData.navidromeUsername, sessionData.navidromePassword);
       }
       setState({ isLoggedIn: true, username: sessionData.appUsername || memNavidromeUser, setupDone: true, loading: false, error: null });
+      trackEvent('auth.login', { username: sessionData.appUsername || appUsername });
       return true;
-    } catch {
+    } catch (e) {
+      reportError(e, { source: 'auth.login' });
       setState(s => ({ ...s, error: 'Server unreachable', loading: false }));
       return false;
     }

@@ -1,0 +1,104 @@
+# hifi on a VPS — player stack only.
+#
+# Navidrome and the Sonos proxy stay on the home NAS (Synology):
+#   - The player connects to Navidrome via first-run onboarding (/setup),
+#     or via NAVIDROME_URL env.
+#   - The Sonos proxy runs on the LAN and is configured in the player's
+#     Settings page (sonosProxyUrl).
+#
+# Ports are bound to loopback — put a Cloudflare Tunnel (or reverse proxy)
+# in front for public access.
+
+name: hifi
+
+services:
+  hifi:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: hifi
+    restart: unless-stopped
+    environment:
+      - PORT=4321
+      # Optional: pre-configure Navidrome (otherwise use web onboarding)
+      - NAVIDROME_URL=${NAVIDROME_URL:-}
+      - NAVIDROME_USER=${COMPANION_USER:-}
+      - NAVIDROME_PASSWORD=${COMPANION_PASSWORD:-}
+      - LASTFM_API_KEY=${LASTFM_API_KEY:-}
+      - PROXY_API_KEY=${PROXY_API_KEY:-}
+      - HOT_THRESHOLD=${HOT_THRESHOLD:-5}
+      - DB_PATH=/data/companion.db
+      - NAVIDROME_LAN_URL=${NAVIDROME_LAN_URL:-}
+      # ── Observability ──
+      - SENTRY_DSN=${SENTRY_DSN:-}
+      - RELEASE=${RELEASE:-hifi@dev}
+      - UMAMI_WEBSITE_ID=${UMAMI_WEBSITE_ID:-}
+      - UMAMI_URL=http://umami:3000
+    ports:
+      - "127.0.0.1:4321:4321"
+    volumes:
+      - ./hifi-data:/data
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+
+  # ── Analytics (Umami) ──
+  # First boot: open http://127.0.0.1:3000 (via SSH tunnel), login admin/umami,
+  # add a website, then set UMAMI_WEBSITE_ID in .env and `docker compose restart hifi`.
+  umami-db:
+    image: postgres:16-alpine
+    container_name: umami-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=umami
+      - POSTGRES_USER=umami
+      - POSTGRES_PASSWORD=${UMAMI_DB_PASSWORD:?set UMAMI_DB_PASSWORD in .env}
+    volumes:
+      - ./umami-db:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  umami:
+    image: ghcr.io/umami-software/umami:postgresql-latest
+    container_name: umami
+    restart: unless-stopped
+    depends_on:
+      - umami-db
+    environment:
+      - DATABASE_URL=postgresql://umami:${UMAMI_DB_PASSWORD:?set UMAMI_DB_PASSWORD in .env}@umami-db:5432/umami
+      - DATABASE_TYPE=postgresql
+      - APP_SECRET=${UMAMI_APP_SECRET:?set UMAMI_APP_SECRET in .env}
+      - HOSTNAME=0.0.0.0
+    ports:
+      - "127.0.0.1:3000:3000"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  # ── Public access (Cloudflare Tunnel) ──
+  # 1. Cloudflare Zero Trust → Networks → Tunnels → Create tunnel (cloudflared)
+  # 2. Copy the token into .env as TUNNEL_TOKEN=... (never in chat/git)
+  # 3. In the tunnel config add public hostname:
+  #      play.hifi.fyi  →  HTTP  hifi:4321
+  # 4. docker compose -f docker-compose.vps.yml up -d cloudflared
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared-hifi
+    restart: unless-stopped
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN:-}
+    networks:
+      - default
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M

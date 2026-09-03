@@ -16,6 +16,7 @@ export class SubsonicClient {
 
   constructor(url: string, username: string, password: string) {
     this.baseUrl = url.replace(/\/+$/, '');
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(this.baseUrl)) this.baseUrl = 'https://' + this.baseUrl;
     if (!this.baseUrl.endsWith('/rest')) this.baseUrl += '/rest';
     this.username = username;
     this.password = password;
@@ -79,6 +80,11 @@ export class SubsonicClient {
   async getArtist(artistId: string): Promise<SubsonicArtist> {
     const sr = await this.request('getArtist.view', { id: artistId });
     return sr.artist;
+  }
+
+  async getSong(id: string): Promise<SubsonicSong> {
+    const sr = await this.request('getSong.view', { id });
+    return sr.song;
   }
 
   async getRandomSongs(size = 50, fromYear?: number, toYear?: number, genre?: string): Promise<SubsonicSong[]> {

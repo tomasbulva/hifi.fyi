@@ -6,6 +6,8 @@ import { sonosControls, getProxyUrl, proxyApiHeaders } from './sonosProvider';
 import { useSettings } from './SettingsContext';
 import { getNextRecommendation } from './companionClient';
 import { imageCache } from './imageCache';
+import { track as trackEvent } from './analytics';
+import { reportError } from './errorReport';
 import type {
   SubsonicArtist, SubsonicAlbum, SubsonicSong,
   QueueItem, PlaybackState, CodecInfo, ViewName,
@@ -283,6 +285,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   const playFromQueueIndex = useCallback((idx: number) => {
     const item = queue[idx];
     if (!item) return;
+    trackEvent('song.play', { id: item.song.id, title: item.song.title, artist: item.song.artist, source: 'queue' });
     setQueueIndex(idx);
 
     if (isCasting()) {
@@ -336,6 +339,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
                     // playFromQueueIndex reads from queue state, but setQueue is async
                     // So we call engine.play directly and update state
                     if (!isCasting()) {
+                      trackEvent('song.play', { id: song.id, title: song.title, artist: song.artist, source: 'autoplay' });
                       engine.play(song);
                       setCodecInfo(engine.getCodecInfo());
                     } else {
@@ -401,6 +405,8 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     // If queue is empty or playing outside queue, build a fresh queue
     setQueue([{ song: track, queuedAt: Date.now() }]);
     setQueueIndex(0);
+
+    trackEvent('song.play', { id: track.id, title: track.title, artist: track.artist, source: 'direct' });
 
     if (isCasting()) {
       castStreamUrl(track);
@@ -572,6 +578,8 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     setQueue([{ song: track, queuedAt: Date.now() }]);
     setQueueIndex(0);
 
+    trackEvent('song.play', { id: track.id, title: track.title, artist: track.artist, source: 'play-now' });
+
     if (isCasting()) {
       castStreamUrl(track);
     } else {
@@ -621,6 +629,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   }, [engine]);
 
   const setCastTarget = useCallback((target: CastTarget | null) => {
+    if (target) trackEvent('cast.connect', { type: target.type, name: target.name });
     // Stop local playback when starting to cast
     if (target && !castTargetRef.current) {
       engine.pause();
@@ -663,6 +672,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       setPlaylists(p);
       return playlist;
     } catch {
+      reportError(new Error('createPlaylist failed'), { queueSize: queue.length });
       return null;
     }
   }, [queue]);
@@ -677,6 +687,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       setArtists(a.slice(0, 48));
     } catch (e) {
       console.error('Failed to load artists:', e);
+      reportError(e, { source: 'loadArtists' });
     }
   }, [artistsFull.length]);
 
@@ -694,6 +705,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       setAlbumsLastPageSize(prev => ({ ...prev, [type]: albums.length }));
     } catch (e) {
       console.error('Failed to load albums:', type, e);
+      reportError(e, { source: 'loadAlbums', albumType: type });
       setAlbumsByType(prev => ({ ...prev, [type]: [] }));
       setAlbumsOffsets(prev => ({ ...prev, [type]: 0 }));
     }
@@ -715,6 +727,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       setAlbumsLastPageSize(prev => ({ ...prev, [type]: more.length }));
     } catch (e) {
       console.error('Failed to load more albums:', type, e);
+      reportError(e, { source: 'loadMoreAlbums', albumType: type });
     }
   }, [albumsOffsets]);
 
@@ -725,6 +738,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       setPlaylists(p);
     } catch (e) {
       console.error('Failed to load playlists:', e);
+      reportError(e, { source: 'loadPlaylists' });
     }
   }, [playlists.length]);
 
@@ -737,6 +751,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       setSongsHasMore(songs.length >= 100);
     } catch (e) {
       console.error('Failed to load songs:', e);
+      reportError(e, { source: 'loadAllSongs' });
     }
   }, [allSongs.length]);
 
@@ -753,6 +768,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       if (more.length < 100) setSongsHasMore(false);
     } catch (e) {
       console.error('Failed to load more songs:', e);
+      reportError(e, { source: 'loadMoreSongs' });
     }
   }, [songsHasMore, songsOffset]);
 
@@ -763,6 +779,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       setRadios(r);
     } catch (e) {
       console.error('Failed to load radios:', e);
+      reportError(e, { source: 'loadRadios' });
     }
   }, [radios.length]);
 
@@ -829,6 +846,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       }
     } catch (e) {
       console.error('Failed to toggle star, reverting:', e);
+      reportError(e, { source: 'toggleStar', songId });
       // Revert on error
       setStarredIds(prev => {
         const next = new Set(prev);

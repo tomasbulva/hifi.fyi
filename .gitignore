@@ -13,3 +13,7 @@ dist/
 
 # OS
 .DS_Store
+
+# Runtime volumes (live DBs — never commit)
+deploy/hifi-data/
+deploy/umami-db/

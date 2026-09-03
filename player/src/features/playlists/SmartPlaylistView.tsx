@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useMusic } from '../../core/MusicContext';
 import { useCompanion } from '../../core/CompanionContext';
+import { reportError } from '../../core/errorReport';
 import { getDailyMix, getArtistIntro, getGenreMix, getPlaylistCoverUrl } from '../../core/companionClient';
 import type { SubsonicSong } from '../../core/types';
 import { CachedCover } from '../../components/CachedCover';
@@ -87,6 +88,7 @@ export default function SmartPlaylistView() {
           setError('Unknown playlist type');
         }
       } catch (e) {
+        reportError(e, { source: 'smartPlaylist.load', kind, id });
         if (!cancelled) setError('Failed to load playlist');
       }
       if (!cancelled) setLoading(false);

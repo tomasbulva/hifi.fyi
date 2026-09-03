@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { reportError } from '../../core/errorReport';
 import { useMusic } from '../../core/MusicContext';
 import type { SubsonicAlbum } from '../../core/types';
 import { Centered, Empty } from '../../features/library/components';
@@ -25,7 +26,7 @@ export default function FavoritesView() {
     getAlbumList2('starred', { size: 50 }).then(albs => {
       setStarredAlbums(albs);
       setLoaded(true);
-    }).catch(() => setLoaded(true));
+    }).catch((e) => { reportError(e, { source: 'favorites.loadStarred' }); setLoaded(true); });
   }, [loadAllSongs]);
 
   const starredSongs = allSongs.filter(s => starredIds.has(s.id));

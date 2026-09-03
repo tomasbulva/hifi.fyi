@@ -33,9 +33,66 @@ let sessionAvailable = false;
 let currentSession: any = null;
 let stateCallback: ((state: { connected: boolean; target: CastTarget | null }) => void) | null = null;
 
+function initCast(): void {
+  if (initialized) return;
+  const cast = window.cast;
+  const chrome = window.chrome;
+  // SDK not fully loaded yet — wait for the loader callback
+  if (!cast?.framework || !chrome?.cast) return;
+
+  sessionAvailable = true;
+
+  cast.framework.CastContext.getInstance().setOptions({
+    receiverApplicationId: DEFAULT_MEDIA_RECEIVER_APP_ID,
+    autoJoinPolicy: chrome.cast.AutoJoinPolicy.ORIGIN_SCOPED,
+  });
+
+  // Listen for session state changes
+  cast.framework.CastContext.getInstance().addEventListener(
+    cast.framework.CastContextEventType.SESSION_STATE_CHANGED,
+    (event: any) => {
+      const session = event.session;
+      switch (event.sessionState) {
+        case cast.framework.SessionState.SESSION_STARTED:
+          currentSession = session;
+          const target: CastTarget = {
+            id: session.getCastDevice()?.deviceId || 'cast',
+            name: session.getCastDevice()?.friendlyName || 'Google Cast Device',
+            type: 'other',
+          };
+          stateCallback?.({ connected: true, target });
+          break;
+        case cast.framework.SessionState.SESSION_ENDED:
+        case cast.framework.SessionState.SESSION_RESUMED:
+          currentSession = null;
+          stateCallback?.({ connected: false, target: null });
+          break;
+      }
+    }
+  );
+
+  // Listen for device availability
+  cast.framework.CastContext.getInstance().addEventListener(
+    cast.framework.CastContextEventType.CAST_STATE_CHANGED,
+    (_event: any) => {
+      // NOT_VISIBLE → devices available, show cast button
+      // NO_DEVICES_AVAILABLE → no cast devices
+    }
+  );
+
+  initialized = true;
+}
+
 function ensureInitialized(): Promise<void> {
   return new Promise((resolve) => {
     if (initialized && sessionAvailable) {
+      resolve();
+      return;
+    }
+
+    // SDK may already be loaded (loader callback fired before we registered ours)
+    initCast();
+    if (initialized) {
       resolve();
       return;
     }
@@ -45,50 +102,7 @@ function ensureInitialized(): Promise<void> {
         resolve();
         return;
       }
-      sessionAvailable = true;
-
-      const cast = window.cast;
-      const chrome = window.chrome;
-
-      cast.framework.CastContext.getInstance().setOptions({
-        receiverApplicationId: DEFAULT_MEDIA_RECEIVER_APP_ID,
-        autoJoinPolicy: chrome.cast.AutoJoinPolicy.ORIGIN_SCOPED,
-      });
-
-      // Listen for session state changes
-      cast.framework.CastContext.getInstance().addEventListener(
-        cast.framework.CastContextEventType.SESSION_STATE_CHANGED,
-        (event: any) => {
-          const session = event.session;
-          switch (event.sessionState) {
-            case cast.framework.SessionState.SESSION_STARTED:
-              currentSession = session;
-              const target: CastTarget = {
-                id: session.getCastDevice()?.deviceId || 'cast',
-                name: session.getCastDevice()?.friendlyName || 'Google Cast Device',
-                type: 'other',
-              };
-              stateCallback?.({ connected: true, target });
-              break;
-            case cast.framework.SessionState.SESSION_ENDED:
-            case cast.framework.SessionState.SESSION_RESUMED:
-              currentSession = null;
-              stateCallback?.({ connected: false, target: null });
-              break;
-          }
-        }
-      );
-
-      // Listen for device availability
-      cast.framework.CastContext.getInstance().addEventListener(
-        cast.framework.CastContextEventType.CAST_STATE_CHANGED,
-        (_event: any) => {
-          // NOT_VISIBLE → devices available, show cast button
-          // NO_DEVICES_AVAILABLE → no cast devices
-        }
-      );
-
-      initialized = true;
+      initCast();
       resolve();
     };
   });
@@ -194,7 +208,7 @@ export async function requestGoogleCastSession(): Promise<void> {
  * Check if the Google Cast SDK is available (Chrome/Edge only).
  */
 export function isGoogleCastAvailable(): boolean {
-  return sessionAvailable;
+  return sessionAvailable || !!(window as any).cast?.framework;
 }
 
 /**

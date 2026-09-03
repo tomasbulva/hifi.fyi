@@ -48,7 +48,7 @@ export default function CastButton() {
     setOpen(false);
   }
 
-  const showCastIcon = isCasting || hasGoogleCast || sonosTargets.length > 0;
+  const showCastIcon = true; // always show — the dropdown explains what's available
 
   return (
     <div className="relative inline-block">

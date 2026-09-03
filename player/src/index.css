@@ -141,9 +141,39 @@ body {
 
 /* No overflow:hidden — the whole page scrolls now */
 
+/* ── Collapsible sidebar ──
+   Sidebar width is a CSS variable so the collapsed state (icon rail)
+   can shift the main content without re-rendering the whole app. */
+:root {
+  --sidebar-w: 16rem;
+}
+
+@media (min-width: 768px) {
+  .app-main {
+    margin-left: var(--sidebar-w);
+  }
+}
+
 ::selection {
   background: #d0bcff;
   color: #ffffff;
+}
+
+/* ── App-like feel: no accidental text selection ──
+   Dragging the cursor over buttons/labels was selecting everything.
+   Inputs, textareas, and contenteditable regions stay selectable. */
+* {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+input,
+textarea,
+select,
+[contenteditable="true"] {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 /* ── Scrollbar styling ── */

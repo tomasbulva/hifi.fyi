@@ -4,6 +4,7 @@
  */
 
 import { getStreamUrl } from './api';
+import { reportError } from './errorReport';
 import type { SubsonicSong, CodecInfo } from './types';
 
 export type EngineEvent = 'play' | 'pause' | 'timeupdate' | 'ended' | 'error' | 'loadedmetadata';
@@ -84,7 +85,8 @@ export class AudioEngine {
       this.source.connect(this.analyser);
       this.analyser.connect(this.audioCtx.destination);
       return this.analyser;
-    } catch {
+    } catch (e) {
+      reportError(e, { source: 'audio.analyserInit' });
       return null;
     }
   }

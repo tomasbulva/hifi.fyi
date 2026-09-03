@@ -21,6 +21,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { ToastProvider } from './components/Toast';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useMediaSession } from './hooks/useMediaSession';
+import { trackView } from './core/analytics';
 
 function PlayerApp() {
   const { isLoggedIn, loading } = useAuth();
@@ -32,6 +33,11 @@ function PlayerApp() {
 
   useKeyboardShortcuts();
   useMediaSession();
+
+  // Analytics: report every route/view change
+  useEffect(() => {
+    trackView(location.pathname);
+  }, [location.pathname]);
 
   // Global scan status banner — visible on every page, not just Library
   useEffect(() => {
@@ -89,7 +95,7 @@ function PlayerApp() {
         </div>
       )}
 
-      <main className="md:ml-64 pb-32 md:pb-20 min-h-screen">
+      <main className="app-main pb-32 md:pb-20 min-h-screen">
         <ErrorBoundary>
           <Routes>
             <Route path="/" element={<Navigate to="/player" replace />} />

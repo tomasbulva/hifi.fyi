@@ -1,8 +1,8 @@
 import { useMusic } from '../../core/MusicContext';
 import { useCompanion } from '../../core/CompanionContext';
+import { reportError } from '../../core/errorReport';
 import { useState, useEffect } from 'react';
 import CastButton from '../cast/CastButton';
-import { useCast } from '../../core/CastContext';
 import { CachedCover } from '../../components/CachedCover';
 import { PlayingBars } from '../../components/shared';
 import { DraggableProgressBar } from './DraggableProgressBar';
@@ -10,15 +10,23 @@ import { AlbumBackdrop } from '../../components/AlbumBackdrop';
 import QualityBadge, { SongQualityBadge } from './QualityBadge';
 import VisualizationView, { type VizMode } from '../visualization/VisualizationView';
 import { formatTime } from '../../core/format';
+import { setRating } from '../../core/api';
 import type { SongRating } from '../../core/companionClient';
-function StarRating({ rating }: { rating: number }) {
+function StarRating({ rating, onRate }: { rating: number; onRate?: (r: number) => void }) {
   return (
     <div className="flex items-center gap-0.5 justify-center">
       {[1, 2, 3, 4, 5].map(i => (
-        <span key={i} className="material-symbols-outlined text-base"
-          style={{ fontVariationSettings: i <= rating ? "'FILL' 1" : "'FILL' 0", color: i <= rating ? '#D0BCFF' : '#CBC3D7' }}>
-          star
-        </span>
+        <button
+          key={i}
+          onClick={() => onRate?.(i === rating ? 0 : i)}
+          title={i === rating ? 'Clear rating' : `Rate ${i} star${i > 1 ? 's' : ''}`}
+          className="bg-transparent border-none cursor-pointer p-0 hover:scale-110 transition-transform"
+        >
+          <span className="material-symbols-outlined text-base"
+            style={{ fontVariationSettings: i <= rating ? "'FILL' 1" : "'FILL' 0", color: i <= rating ? '#D0BCFF' : '#CBC3D7' }}>
+            star
+          </span>
+        </button>
       ))}
     </div>
   );
@@ -77,8 +85,6 @@ export default function PlayerView() {
     toggleStar, isStarred,
   } = useMusic();
   const { hotTrackIds, getRating } = useCompanion();
-  const { isCasting, sonosTargets, hasGoogleCast } = useCast();
-
   const [showViz, setShowViz] = useState(false);
   const [vizMode, setVizMode] = useState<VizMode>('bars');
   const vizModes: VizMode[] = ['bars', 'waveform', 'particles'];
@@ -86,14 +92,14 @@ export default function PlayerView() {
 
   const { currentTrack, isPlaying, progress, duration, shuffle, repeat, volume } = playback;
   const coverUrl = currentTrack ? getCoverUrl(currentTrack.coverArt || (currentTrack as any).albumId) : '';
-  const hasCast = isCasting || sonosTargets.length > 0 || hasGoogleCast;
   const starred = currentTrack ? isStarred(currentTrack.id) : false;
 
   const currentIdx = queue.findIndex(item => item.song.id === currentTrack?.id);
 
   const [songRatingData, setSongRatingData] = useState<SongRating | null>(null);
   useEffect(() => {
-    if (!currentTrack) { setSongRatingData(null); return; }
+    if (!currentTrack) { setSongRatingData(null); setRatingOverride(null); return; }
+    setRatingOverride(null);
     let cancelled = false;
     getRating(currentTrack.id).then(data => { if (!cancelled) setSongRatingData(data); });
     return () => { cancelled = true; };
@@ -103,10 +109,28 @@ export default function PlayerView() {
   const isHot = currentTrack ? hotTrackIds.has(currentTrack.id) : false;
 
   const [heartError, setHeartError] = useState(false);
+  // Optimistic rating override — set while the Subsonic setRating call is in flight,
+  // kept as the displayed value on success, reverted on failure.
+  const [ratingOverride, setRatingOverride] = useState<number | null>(null);
+  const [rateError, setRateError] = useState(false);
+
+  async function handleRate(r: number) {
+    if (!currentTrack) return;
+    const prev = ratingOverride ?? songRating;
+    setRatingOverride(r);
+    setRateError(false);
+    try {
+      await setRating(currentTrack.id, r);
+    } catch (e) {
+      setRatingOverride(prev);
+      setRateError(true);
+      reportError(e, { source: 'player.setRating', songId: currentTrack.id });
+    }
+  }
   async function handleHeartClick() {
     if (!currentTrack) return;
     setHeartError(false);
-    try { await toggleStar(currentTrack.id); } catch (e) { setHeartError(true); }
+    try { await toggleStar(currentTrack.id); } catch (e) { reportError(e, { source: 'player.toggleStar', songId: currentTrack.id }); setHeartError(true); }
   }
 
   function renderQueueItems() {
@@ -344,9 +368,9 @@ export default function PlayerView() {
             {currentTrack && <QualityBadge />}
             <div className="flex items-center gap-1.5 justify-center">
               {isHot && <span className="material-symbols-outlined text-base" style={{ color: '#D0BCFF', fontVariationSettings: "'FILL' 1" }}>local_fire_department</span>}
-              <StarRating rating={songRating} />
+              <StarRating rating={ratingOverride ?? songRating} onRate={handleRate} />
             </div>
-            {heartError && <p className="text-xs" style={{ color: '#FF6B6B' }}>Failed to update favorite</p>}
+            {(heartError || rateError) && <p className="text-xs" style={{ color: '#FF6B6B' }}>{rateError ? 'Failed to save rating' : 'Failed to update favorite'}</p>}
           </div>
         </div>
 
@@ -394,7 +418,7 @@ export default function PlayerView() {
             onChange={e => setVolume(Number(e.target.value))}
             className="flex-1 h-1 appearance-none rounded-full cursor-pointer"
             style={{ background: `linear-gradient(to right, #D0BCFF ${volume * 100}%, rgba(255,255,255,0.08) ${volume * 100}%)`, accentColor: '#D0BCFF' }} />
-          {hasCast && <CastButton />}
+          <CastButton />
         </div>
       </div>
 

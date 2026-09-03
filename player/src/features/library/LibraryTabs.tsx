@@ -3,15 +3,7 @@ interface Tab {
   label: string;
 }
 
-const FILTERS = [
-  { id: 'all', label: 'All' },
-  { id: 'recently-added', label: 'Recently Added' },
-  { id: 'recently-played', label: 'Recently Played' },
-  { id: 'favorites', label: 'Favorites' },
-  { id: 'top-rated', label: 'Top Rated' },
-  { id: 'most-played', label: 'Most Played' },
-  { id: 'random', label: 'Random' },
-];
+interface FilterPill { id: string; label: string }
 
 interface LibraryTabsProps {
   tabs: Tab[];
@@ -19,10 +11,11 @@ interface LibraryTabsProps {
   onChange: (id: string) => void;
   filter?: string;
   onFilter?: (id: string) => void;
-  showFilters?: boolean;
+  /** Filter pills for the active tab — tabs without filters show none. */
+  filters?: FilterPill[];
 }
 
-export function LibraryTabs({ tabs, active, onChange, filter = 'all', onFilter, showFilters = true }: LibraryTabsProps) {
+export function LibraryTabs({ tabs, active, onChange, filter = 'all', onFilter, filters = [] }: LibraryTabsProps) {
   return (
     <div>
       {/* Tab row */}
@@ -51,9 +44,9 @@ export function LibraryTabs({ tabs, active, onChange, filter = 'all', onFilter, 
       </div>
 
       {/* Filter pills */}
-      {showFilters && (
+      {filters.length > 0 && (
         <div className="flex gap-2 flex-wrap mb-6">
-          {FILTERS.map(f => {
+          {filters.map(f => {
             const isActive = filter === f.id;
             return (
               <button

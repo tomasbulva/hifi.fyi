@@ -16,6 +16,7 @@
     "test:report": "playwright show-report"
   },
   "dependencies": {
+    "@sentry/react": "^10.73.0",
     "@tailwindcss/vite": "^4.3.1",
     "js-md5": "^0.8.3",
     "react": "^19.2.7",

@@ -1,7 +1,9 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useMusic } from '../../core/MusicContext';
+import { reportError } from '../../core/errorReport';
 import { getAlbum, getArtist, getPlaylist, star, unstar } from '../../core/api';
+import { getNavidromeCreds } from '../../core/AuthContext';
 import type { SubsonicArtist, SubsonicAlbum, AlbumListType, SubsonicSong, SubsonicPlaylist } from '../../core/types';
 import { Centered, Breadcrumb, Empty } from './components';
 import { LibraryTabs } from './LibraryTabs';
@@ -36,6 +38,28 @@ const ALBUM_FILTERS: Record<string, AlbumListType> = {
   'random': 'random',
 };
 
+// Filter pills per tab — only filters that actually work.
+// Albums use server-side album list types; playlists filter client-side.
+// Artists and songs have no working filters yet, so they show none.
+const FILTERS_BY_TAB: Record<LibTab, { id: string; label: string }[]> = {
+  albums: [
+    { id: 'all', label: 'All' },
+    { id: 'recently-added', label: 'Recently Added' },
+    { id: 'recently-played', label: 'Recently Played' },
+    { id: 'favorites', label: 'Favorites' },
+    { id: 'top-rated', label: 'Top Rated' },
+    { id: 'most-played', label: 'Most Played' },
+    { id: 'random', label: 'Random' },
+  ],
+  playlists: [
+    { id: 'all', label: 'All' },
+    { id: 'mine', label: 'Mine' },
+    { id: 'shared', label: 'Shared' },
+  ],
+  artists: [],
+  songs: [],
+};
+
 const HEADER_LABELS: Record<LibTab, string> = {
   playlists: 'Your Playlists',
   albums: 'Your Albums',
@@ -57,7 +81,50 @@ const EVENT_PLAYLISTS = [
 ];
 
 function artistCoverUrl(artist: SubsonicArtist, getCoverUrl: (id: string | undefined) => string): string {
-  return getCoverUrl(artist.coverArt || artist.artistImageUrl);
+  // Native art from Navidrome first; otherwise the backend fetches a matching
+  // image from Deezer and caches it (see /api/artist-image on the server).
+  if (artist.coverArt) return getCoverUrl(artist.coverArt);
+  if (artist.artistImageUrl) return artist.artistImageUrl;
+  return `/api/artist-image/${encodeURIComponent(artist.id)}?name=${encodeURIComponent(artist.name)}`;
+}
+
+/** Deterministic pastel-dark gradient + initials for artists without art. */
+function artistGradient(name: string): string {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
+  return `linear-gradient(135deg, hsl(${h} 45% 32%), hsl(${(h + 50) % 360} 40% 18%))`;
+}
+
+function artistInitials(name: string): string {
+  const words = name.split(/\s+/).filter(Boolean);
+  const chars = words.length >= 2 ? words[0][0] + words[1][0] : name.slice(0, 2);
+  return chars.toUpperCase();
+}
+
+/** Artist cover with initials fallback when no image exists anywhere. */
+function ArtistCover({ artist, getCoverUrl, className, round }: {
+  artist: SubsonicArtist;
+  getCoverUrl: (id: string | undefined) => string;
+  className?: string;
+  round?: boolean;
+}) {
+  return (
+    <CachedCover
+      url={artistCoverUrl(artist, getCoverUrl)}
+      alt={artist.name}
+      className={className}
+      fallback={
+        <div
+          className={`flex items-center justify-center overflow-hidden ${className ?? ''} ${round ? 'rounded-full' : ''}`}
+          style={{ background: artistGradient(artist.name) }}
+        >
+          <span className="font-extrabold select-none" style={{ color: 'rgba(208,188,255,0.85)', fontSize: '2.5rem', letterSpacing: '-0.02em' }}>
+            {artistInitials(artist.name)}
+          </span>
+        </div>
+      }
+    />
+  );
 }
 
 // ── Bento featured section: large card + 2×2 grid ──
@@ -155,10 +222,10 @@ export default function LibraryView() {
     if (tab !== 'playlists' || albumId || artistId || playlistId) return;
     getDailyMixes().then(mixes => {
       setDailyMixes(mixes);
-    }).catch(() => setDailyMixes([]));
+    }).catch((e) => { reportError(e, { source: 'library.loadDailyMixes' }); setDailyMixes([]); });
     getGenres().then(g => {
       setGenres(g);
-    }).catch(() => setGenres([]));
+    }).catch((e) => { reportError(e, { source: 'library.loadGenres' }); setGenres([]); });
   }, [tab, albumId, artistId, playlistId, showSmartPlaylists, scanning]);
   // ── Infinite scroll sentry ──
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -192,7 +259,7 @@ export default function LibraryView() {
         try {
           const a = await getAlbum(albumId);
           if (!cancelled) { setDetailAlbum(a); setAlbumStarred(!!a.starred); }
-        } catch { /* 404 etc */ }
+        } catch (e) { reportError(e, { source: 'library.loadAlbum', albumId }); }
       } else if (artistId) {
         try {
           const a = await getArtist(artistId);
@@ -203,12 +270,12 @@ export default function LibraryView() {
             const hasSgls = albs.some(ab => (ab.songCount ?? 0) === 1);
             setDiscoFilter(hasAlbs ? 'albums' : hasSgls ? 'singles' : 'albums');
           }
-        } catch { /* */ }
+        } catch (e) { reportError(e, { source: 'library.loadArtist', artistId }); }
       } else if (playlistId) {
         try {
           const p = await getPlaylist(playlistId);
           if (!cancelled) setDetailPlaylist(p);
-        } catch { /* */ }
+        } catch (e) { reportError(e, { source: 'library.loadPlaylist', playlistId }); }
       }
       if (!cancelled) setDetailLoading(false);
     }
@@ -268,7 +335,7 @@ export default function LibraryView() {
       try {
         if (wasStarred) await unstar(album.id);
         else await star(album.id);
-      } catch { setAlbumStarred(wasStarred); }
+      } catch (e) { reportError(e, { source: 'library.starAlbum', albumId: album.id }); setAlbumStarred(wasStarred); }
     }
     return (
       <Centered>
@@ -378,7 +445,7 @@ export default function LibraryView() {
         <div className="flex flex-col md:flex-row gap-4 mb-8 min-w-0">
           {/* Hero image card */}
           <div className="relative rounded-2xl overflow-hidden flex-1 min-w-0 min-h-[220px]" style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)' }}>
-            <CachedCover url={artistCoverUrl(artist, getCoverUrl)} alt={artist.name}
+            <ArtistCover artist={artist} getCoverUrl={getCoverUrl}
               className="absolute inset-0 w-full h-full object-cover" />
             <div className="absolute inset-0 bg-gradient-to-t from-[#0D0D0D] via-transparent to-transparent" />
             <div className="absolute bottom-0 left-0 right-0 p-6">
@@ -442,7 +509,7 @@ export default function LibraryView() {
           onClick={() => navigate(`/smart/artist-intro/${artistId}`)}>
           <div className="flex items-center gap-4 p-5">
             <div className="w-16 h-16 rounded-xl overflow-hidden flex-shrink-0">
-              <CachedCover url={artistCoverUrl(artist, getCoverUrl)} alt={artist.name} className="w-full h-full object-cover" />
+              <ArtistCover artist={artist} getCoverUrl={getCoverUrl} className="w-full h-full object-cover" />
             </div>
             <div className="flex-1 min-w-0">
               <span className="text-[9px] font-bold uppercase tracking-widest block mb-1" style={{ color: '#D0BCFF' }}>Artist Intro</span>
@@ -609,7 +676,7 @@ export default function LibraryView() {
           </button>
         </div>
       </div>
-      <LibraryTabs tabs={TABS} active={tab} onChange={setTab} filter={filter} onFilter={setFilter} />
+      <LibraryTabs tabs={TABS} active={tab} onChange={setTab} filter={filter} onFilter={setFilter} filters={FILTERS_BY_TAB[tab]} />
 
       {tab === 'albums' && (() => {
         const albs = albumsByType[ALBUM_FILTERS[filter]] ?? [];
@@ -662,7 +729,7 @@ export default function LibraryView() {
           renderFeatured={a => (
             <div className="relative rounded-2xl overflow-hidden cursor-pointer group"
               onClick={() => navigate(`/library/artists/${slugify(a.name)}/${a.id}`)}>
-              <CachedCover url={artistCoverUrl(a, getCoverUrl)} alt={a.name}
+              <ArtistCover artist={a} getCoverUrl={getCoverUrl}
                 className="w-full aspect-square object-cover transition-transform duration-500 group-hover:scale-105" />
               <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
               <div className="absolute bottom-0 left-0 right-0 p-6">
@@ -677,7 +744,7 @@ export default function LibraryView() {
           renderCompact={a => (
             <div key={a.id} className="flex flex-col items-center rounded-lg p-3 cursor-pointer hover:bg-white/[0.03] transition-all"
               onClick={() => navigate(`/library/artists/${slugify(a.name)}/${a.id}`)}>
-              <CachedCover url={artistCoverUrl(a, getCoverUrl)} alt={a.name}
+              <ArtistCover artist={a} getCoverUrl={getCoverUrl} round
                 className="mb-2 h-24 w-24 rounded-full object-cover transition-transform group-hover:scale-105 flex-shrink-0" />
               <span className="text-sm font-medium truncate w-full text-center" style={{ color: '#E5E2E1' }}>{a.name}</span>
             </div>
@@ -690,7 +757,16 @@ export default function LibraryView() {
       );
       })()}
 
-      {tab === 'playlists' && (() => (
+      {tab === 'playlists' && (() => {
+        // Client-side playlist filters: Mine = owned by the logged-in Navidrome
+        // user, Shared = public playlists or owned by someone else.
+        const me = getNavidromeCreds().username;
+        const visiblePlaylists = filter === 'mine'
+          ? playlists.filter(p => p.owner === me)
+          : filter === 'shared'
+            ? playlists.filter(p => p.public || (p.owner && p.owner !== me))
+            : playlists;
+        return (
         <>
         {showSmartPlaylists && dailyMixes.length > 0 && (
           <div className="mb-8">
@@ -723,7 +799,7 @@ export default function LibraryView() {
                   getSmartPlaylist({ mood: card.mood, limit: 50 }).then(songs => {
                     if (songs.length > 0) { replaceQueue(songs); navigate('/player'); }
                     else { toast.show('No tracks found — try running a library scan in Settings'); }
-                  }).catch(() => toast.show('Failed to generate playlist'));
+                  }).catch((e) => { reportError(e, { source: 'library.smartPlaylistGenerate', mood: card.mood }); toast.show('Failed to generate playlist'); });
                 }}>
                 <div className="relative overflow-hidden rounded-lg mb-2 aspect-square flex items-center justify-center"
                   style={{ background: 'rgba(255,255,255,0.03)' }}>
@@ -757,7 +833,7 @@ export default function LibraryView() {
             </div>
           </div>
         )}
-        <FeaturedSection items={playlists}
+        <FeaturedSection items={visiblePlaylists}
           renderFeatured={pl => (
             <div className="group relative rounded-2xl overflow-hidden cursor-pointer"
               onClick={() => navigate(`/library/playlists/${slugify(pl.name)}/${pl.id}`)}>
@@ -793,7 +869,8 @@ export default function LibraryView() {
           )}
         />
         </>
-      ))()}
+        );
+      })()}
 
       {tab === 'songs' && (() => {
         loadMoreRef.current = songsHasMore ? loadMoreSongs : null;
