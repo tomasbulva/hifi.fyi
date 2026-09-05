@@ -16,7 +16,19 @@ let PROXY_URL = resolveProxyUrl();
 let PROXY_API_KEY = resolveApiKey();
 
 function resolveProxyUrl(): string {
-  // Both dev and production use relative /api/sonos
+  // Explicit proxy URL from Settings wins — e.g. https://sonos.example for a
+  // remote Sonos proxy (must be HTTPS: the player page is HTTPS, and browsers
+  // block mixed-content HTTP calls). Empty → same-origin /api/sonos, i.e. the
+  // Sonos control built into the hifi server (works only when it runs on the
+  // speakers' LAN).
+  try {
+    const raw = localStorage.getItem('hifi_settings');
+    if (raw) {
+      const settings = JSON.parse(raw);
+      const url = (settings.sonosProxyUrl || '').trim().replace(/\/+$/, '');
+      if (url) return url;
+    }
+  } catch { /* fall through to same-origin */ }
   return '/api/sonos';
 }
 
