@@ -179,9 +179,10 @@ export class CompanionDB {
   // ── Library browser: sorted/filtered songs over the whole scanned library ──
 
   /** Sort orders for /api/songs-extended. Returns the filtered total for pagination. */
-  getSongsSorted(sort: string, limit: number, offset: number): { songs: CachedSong[]; total: number } {
+  getSongsSorted(sort: string, limit: number, offset: number, opts?: { genre?: string; shuffle?: boolean }): { songs: CachedSong[]; total: number } {
     let where = '1=1';
     let order = 'title COLLATE NOCASE';
+    const params: (string | number)[] = [];
     switch (sort) {
       case 'most-played':
         where = 'play_count > 0';
@@ -207,21 +208,33 @@ export class CompanionDB {
         where = 'play_count = 0';
         order = '(user_rating * 2 + starred) DESC, user_rating DESC, id';
         break;
+      case 'neglected':
+        // Loved (≥4★) but not touched in 90+ days; never-played gems first.
+        where = 'user_rating >= 4 AND (last_played IS NULL OR last_played < ?)';
+        params.push(new Date(Date.now() - 90 * 86400000).toISOString());
+        order = 'last_played ASC, user_rating DESC, title COLLATE NOCASE';
+        break;
+      case 'newest':
+        where = 'year IS NOT NULL AND year > 0';
+        order = 'year DESC, artist COLLATE NOCASE, title COLLATE NOCASE';
+        break;
+      case 'oldest':
+        where = 'year IS NOT NULL AND year > 0';
+        order = 'year ASC, artist COLLATE NOCASE, title COLLATE NOCASE';
+        break;
     }
-    const total = (this.db.prepare(`SELECT COUNT(*) AS c FROM songs WHERE ${where}`).get() as any).c as number;
-    const songs = this.db.prepare(`SELECT * FROM songs WHERE ${where} ORDER BY ${order} LIMIT ? OFFSET ?`).all(limit, offset) as CachedSong[];
+    if (opts?.genre) {
+      where += ' AND genre = ? COLLATE NOCASE';
+      params.push(opts.genre);
+    }
+    if (opts?.shuffle) order = 'RANDOM()';
+    const total = (this.db.prepare(`SELECT COUNT(*) AS c FROM songs WHERE ${where}`).get(...params) as any).c as number;
+    const songs = this.db.prepare(`SELECT * FROM songs WHERE ${where} ORDER BY ${order} LIMIT ? OFFSET ?`).all(...params, limit, offset) as CachedSong[];
     return { songs, total };
   }
 
   /** Aggregate per-artist stats for /api/artists-extended, sorted. */
-  getArtistStats(sort: string, limit: number, offset: number): { artists: ArtistStatRow[]; total: number } {
-    let where = '1=1';
-    switch (sort) {
-      case 'recently-played': where = 'last_played IS NOT NULL'; break;
-      case 'favorites': where = '(starred_count > 0 OR avg_rating >= 4)'; break;
-      case 'play-now': where = 'best_unplayed > 0'; break;
-    }
-
+  getArtistStats(sort: string, limit: number, offset: number, opts?: { shuffle?: boolean }): { artists: ArtistStatRow[]; total: number } {
     // Per-artist aggregates. Signature cover = cover art of the most-played song.
     const rows = this.db.prepare(`
       SELECT artist,
@@ -273,14 +286,24 @@ export class CompanionDB {
       case 'play-now':
         stats.sort((a, b) => b.best_unplayed - a.best_unplayed || a.total_plays - b.total_plays || a.artist.localeCompare(b.artist));
         break;
+      case 'neglected':
+        // Loved artists (starred / avg ≥4★) not touched in 90+ days, longest-neglected first.
+        stats.sort((a, b) => (a.last_played ?? '').localeCompare(b.last_played ?? '') || (b.avg_rating ?? 0) - (a.avg_rating ?? 0));
+        break;
       default:
         stats.sort((a, b) => a.artist.localeCompare(b.artist));
     }
 
-    const filtered = where === '1=1' ? stats : stats.filter(s =>
-      where.includes('last_played') ? !!s.last_played
-      : where.includes('starred_count') ? (s.starred_count > 0 || (s.avg_rating ?? 0) >= 4)
-      : s.best_unplayed > 0);
+    const cutoff = new Date(Date.now() - 90 * 86400000).toISOString();
+    const predicates: Record<string, (s: ArtistStatRow) => boolean> = {
+      'recently-played': s => !!s.last_played,
+      'favorites': s => s.starred_count > 0 || (s.avg_rating ?? 0) >= 4,
+      'play-now': s => s.best_unplayed > 0,
+      'neglected': s => (s.starred_count > 0 || (s.avg_rating ?? 0) >= 4) && (!s.last_played || s.last_played < cutoff),
+    };
+    const pred = predicates[sort];
+    const filtered = pred ? stats.filter(pred) : stats;
+    if (opts?.shuffle) filtered.sort(() => Math.random() - 0.5);
     return { artists: filtered.slice(offset, offset + limit), total: filtered.length };
   }
 

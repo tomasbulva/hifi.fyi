@@ -554,7 +554,9 @@ app.get('/api/songs-extended', sessionMiddleware, (req, res) => {
   const sort = String(req.query.sort || 'most-played');
   const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
   const offset = Math.max(parseInt(req.query.offset as string) || 0, 0);
-  const { songs, total } = db.getSongsSorted(sort, limit, offset);
+  const genre = (req.query.genre as string) || undefined;
+  const shuffle = req.query.shuffle === 'true';
+  const { songs, total } = db.getSongsSorted(sort, limit, offset, { genre, shuffle });
   res.json({ songs: songs.map(s => CompanionDB.toApiSong(s)), total });
 });
 
@@ -562,7 +564,8 @@ app.get('/api/artists-extended', sessionMiddleware, (req, res) => {
   const sort = String(req.query.sort || 'most-played');
   const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
   const offset = Math.max(parseInt(req.query.offset as string) || 0, 0);
-  res.json(db.getArtistStats(sort, limit, offset));
+  const shuffle = req.query.shuffle === 'true';
+  res.json(db.getArtistStats(sort, limit, offset, { shuffle }));
 });
 
 app.get('/api/playlist', sessionMiddleware, (req, res) => {

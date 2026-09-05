@@ -71,6 +71,7 @@ const ARTIST_FILTERS = [
   { id: 'favorites', label: 'Favorites' },
   { id: 'golden-years', label: 'Golden Years' },
   { id: 'play-now', label: 'Play Right Now' },
+  { id: 'neglected', label: 'Neglected Gems' },
 ];
 
 const SONG_FILTERS = [
@@ -81,6 +82,9 @@ const SONG_FILTERS = [
   { id: 'favorites', label: 'Favorites' },
   { id: 'top-rated', label: 'Top Rated' },
   { id: 'play-now', label: 'Play Right Now' },
+  { id: 'neglected', label: 'Neglected Gems' },
+  { id: 'newest', label: 'Newest' },
+  { id: 'oldest', label: 'Oldest' },
 ];
 
 /** Card subtitle for an artist under the active extended filter. */
@@ -97,6 +101,10 @@ function artistSubtitle(s: ArtistStats, filter: string): string {
       return s.golden_year ? `Golden year: ${s.golden_year}` : 'No play history yet';
     case 'play-now':
       return `Unplayed · top pick ★${s.best_unplayed}`;
+    case 'neglected':
+      return s.last_played
+        ? `★${(s.avg_rating ?? 0).toFixed(1)} · last played ${new Date(s.last_played).toLocaleDateString()}`
+        : `★${(s.avg_rating ?? 0).toFixed(1)} · never played`;
     default:
       return s.album_count ? `${s.album_count} albums` : '';
   }
@@ -257,16 +265,25 @@ export default function LibraryView() {
   const [extSongs, setExtSongs] = useState<SubsonicSong[] | null>(null);
   const [extSongsTotal, setExtSongsTotal] = useState(0);
   const [artistIndex, setArtistIndex] = useState<Map<string, SubsonicArtist>>(new Map());
+  const [shuffleOn, setShuffleOn] = useState(false);
+  const [songGenre, setSongGenre] = useState('');
+  const [songGenres, setSongGenres] = useState<{ genre: string; count: number }[]>([]);
   const extActive = (tab === 'artists' || tab === 'songs') && filter !== 'all' && companionEnabled && !albumId && !artistId && !playlistId;
+  const scanningNow = !!scanStatus?.scanning;
+
+  // Genre list for the Songs tab filter dropdown
+  useEffect(() => {
+    if (tab !== 'songs' || !companionEnabled) { setSongGenres([]); return; }
+    getGenres().then(setSongGenres).catch(() => setSongGenres([]));
+  }, [tab, companionEnabled, scanningNow]);
 
   // Fetch extended lists; refetch when a scan finishes (scanning flips true→false)
-  const scanningNow = !!scanStatus?.scanning;
   useEffect(() => {
     if (!extActive) return;
     let cancelled = false;
     if (tab === 'artists') {
       setExtArtists(null);
-      getArtistsExtended(filter as ArtistSort, 0, 60)
+      getArtistsExtended(filter as ArtistSort, 0, shuffleOn ? 300 : 60, { shuffle: shuffleOn })
         .then(r => { if (!cancelled) { setExtArtists(r.artists); setExtArtistsTotal(r.total); } })
         .catch((e) => { reportError(e, { source: 'library.artistsExtended', filter }); if (!cancelled) setExtArtists([]); });
       // Name → artist map for ids/covers from the Navidrome index
@@ -278,21 +295,22 @@ export default function LibraryView() {
       }).catch(() => { /* covers fall back to gradient */ });
     } else {
       setExtSongs(null);
-      getSongsExtended(filter as SongSort, 0, 100)
+      getSongsExtended(filter as SongSort, 0, shuffleOn ? 500 : 100, { genre: songGenre || undefined, shuffle: shuffleOn })
         .then(r => { if (!cancelled) { setExtSongs(r.songs); setExtSongsTotal(r.total); } })
         .catch((e) => { reportError(e, { source: 'library.songsExtended', filter }); if (!cancelled) setExtSongs([]); });
     }
     return () => { cancelled = true; };
-  }, [extActive, tab, filter, companionEnabled, scanningNow]);
+  }, [extActive, tab, filter, companionEnabled, scanningNow, shuffleOn, songGenre]);
 
   /** Infinite-scroll continuation for the active extended list. */
   function loadMoreExtended() {
+    if (shuffleOn) return; // shuffle mode loads one big page, no pagination
     if (tab === 'artists' && extArtists) {
       getArtistsExtended(filter as ArtistSort, extArtists.length, 60)
         .then(r => { setExtArtists(prev => prev ? [...prev, ...r.artists] : r.artists); setExtArtistsTotal(r.total); })
         .catch((e) => reportError(e, { source: 'library.loadMoreArtistsExtended', filter }));
     } else if (tab === 'songs' && extSongs) {
-      getSongsExtended(filter as SongSort, extSongs.length, 100)
+      getSongsExtended(filter as SongSort, extSongs.length, 100, { genre: songGenre || undefined })
         .then(r => { setExtSongs(prev => prev ? [...prev, ...r.songs] : r.songs); setExtSongsTotal(r.total); })
         .catch((e) => reportError(e, { source: 'library.loadMoreSongsExtended', filter }));
     }
@@ -402,6 +420,8 @@ export default function LibraryView() {
 
   const setTab = useCallback((newTab: string) => {
     setFilter('all');
+    setShuffleOn(false);
+    setSongGenre('');
     navigate(`/library/${newTab}`);
   }, [navigate]);
 
@@ -774,6 +794,20 @@ export default function LibraryView() {
           {HEADER_LABELS[tab]}
         </h1>
         <div className="flex items-center gap-3">
+          {tab === 'songs' && companionEnabled && songGenres.length > 0 && (
+            <select value={songGenre} onChange={e => setSongGenre(e.target.value)}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer"
+              style={{ background: 'rgba(255,255,255,0.04)', color: '#E5E2E1', border: '1px solid rgba(255,255,255,0.1)' }}>
+              <option value="">All Genres</option>
+              {songGenres.map(g => <option key={g.genre} value={g.genre}>{g.genre} ({g.count})</option>)}
+            </select>
+          )}
+          {(tab === 'artists' || tab === 'songs') && companionEnabled && (
+            <button onClick={() => setShuffleOn(s => !s)} title="Shuffle results"
+              className="bg-transparent border-none cursor-pointer hover:opacity-80 p-1">
+              <span className="material-symbols-outlined text-2xl" style={{ color: shuffleOn ? '#D0BCFF' : '#CBC3D7' }}>shuffle</span>
+            </button>
+          )}
           <button onClick={() => navigate('/search')} className="bg-transparent border-none cursor-pointer hover:opacity-80 p-1">
             <span className="material-symbols-outlined text-2xl" style={{ color: '#CBC3D7' }}>search</span>
           </button>
@@ -830,7 +864,7 @@ export default function LibraryView() {
       {tab === 'artists' && (() => {
         // Companion-backed filters: whole-library sorting over the scan cache
         if (filter !== 'all') {
-          loadMoreRef.current = extArtists && extArtists.length < extArtistsTotal ? loadMoreExtended : null;
+          loadMoreRef.current = (!shuffleOn && extArtists && extArtists.length < extArtistsTotal) ? loadMoreExtended : null;
           if (companionEnabled && extArtists === null) return <Empty>Loading…</Empty>;
           const items = (extArtists ?? []).map(statToArtist);
           if (items.length === 0) return <Empty>No artists for this filter — try a library scan in Settings</Empty>;
@@ -1024,7 +1058,7 @@ export default function LibraryView() {
       {tab === 'songs' && (() => {
         // Companion-backed filters: whole-library sorting over the scan cache
         if (filter !== 'all') {
-          loadMoreRef.current = extSongs && extSongs.length < extSongsTotal ? loadMoreExtended : null;
+          loadMoreRef.current = (!shuffleOn && extSongs && extSongs.length < extSongsTotal) ? loadMoreExtended : null;
           if (companionEnabled && extSongs === null) return <Empty>Loading…</Empty>;
           if ((extSongs ?? []).length === 0) return <Empty>Nothing here yet — play some tracks first, or run a library scan in Settings</Empty>;
           return (

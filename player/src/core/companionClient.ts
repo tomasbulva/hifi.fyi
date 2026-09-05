@@ -178,21 +178,24 @@ export async function getSongRating(songId: string): Promise<SongRating | null> 
 
 // ── Library browser: whole-library sorting/filtering over the companion cache ──
 
-export type SongSort = 'most-played' | 'least-played' | 'recently-played' | 'favorites' | 'top-rated' | 'play-now';
-export type ArtistSort = 'most-played' | 'least-played' | 'recently-played' | 'favorites' | 'golden-years' | 'play-now';
+export type SongSort = 'most-played' | 'least-played' | 'recently-played' | 'favorites' | 'top-rated' | 'play-now' | 'newest' | 'oldest' | 'neglected';
+export type ArtistSort = 'most-played' | 'least-played' | 'recently-played' | 'favorites' | 'golden-years' | 'play-now' | 'neglected';
 
-export async function getSongsExtended(sort: SongSort, offset = 0, limit = 100): Promise<{ songs: SubsonicSong[]; total: number }> {
+export async function getSongsExtended(sort: SongSort, offset = 0, limit = 100, opts?: { genre?: string; shuffle?: boolean }): Promise<{ songs: SubsonicSong[]; total: number }> {
   try {
     const qs = new URLSearchParams({ sort, offset: String(offset), limit: String(limit) });
+    if (opts?.genre) qs.set('genre', opts.genre);
+    if (opts?.shuffle) qs.set('shuffle', 'true');
     const res = await fetch(`/api/songs-extended?${qs}`, { signal: AbortSignal.timeout(15000) });
     if (!res.ok) return { songs: [], total: 0 };
     return await res.json();
   } catch { return { songs: [], total: 0 }; }
 }
 
-export async function getArtistsExtended(sort: ArtistSort, offset = 0, limit = 100): Promise<{ artists: ArtistStats[]; total: number }> {
+export async function getArtistsExtended(sort: ArtistSort, offset = 0, limit = 100, opts?: { shuffle?: boolean }): Promise<{ artists: ArtistStats[]; total: number }> {
   try {
     const qs = new URLSearchParams({ sort, offset: String(offset), limit: String(limit) });
+    if (opts?.shuffle) qs.set('shuffle', 'true');
     const res = await fetch(`/api/artists-extended?${qs}`, { signal: AbortSignal.timeout(15000) });
     if (!res.ok) return { artists: [], total: 0 };
     return await res.json();
