@@ -80,7 +80,7 @@ services:
       resources:
         limits:
           cpus: '0.5'
-          memory: 256M
+          memory: 1G
 
   # ── Public access (Cloudflare Tunnel) ──
   # 1. Cloudflare Zero Trust → Networks → Tunnels → Create tunnel (cloudflared)

@@ -550,6 +550,21 @@ app.get('/api/songs', sessionMiddleware, (req, res) => {
   res.json({ songs: songs.map(s => CompanionDB.toApiSong(s)) });
 });
 
+app.get('/api/songs-extended', sessionMiddleware, (req, res) => {
+  const sort = String(req.query.sort || 'most-played');
+  const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
+  const offset = Math.max(parseInt(req.query.offset as string) || 0, 0);
+  const { songs, total } = db.getSongsSorted(sort, limit, offset);
+  res.json({ songs: songs.map(s => CompanionDB.toApiSong(s)), total });
+});
+
+app.get('/api/artists-extended', sessionMiddleware, (req, res) => {
+  const sort = String(req.query.sort || 'most-played');
+  const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
+  const offset = Math.max(parseInt(req.query.offset as string) || 0, 0);
+  res.json(db.getArtistStats(sort, limit, offset));
+});
+
 app.get('/api/playlist', sessionMiddleware, (req, res) => {
   const mood = req.query.mood as string;
   const era = req.query.era as string;

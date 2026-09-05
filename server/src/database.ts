@@ -5,6 +5,20 @@
 import BetterSqlite3 from 'better-sqlite3';
 import type { SubsonicSong } from './types.js';
 
+/** Per-artist aggregate stats for the library browser (/api/artists-extended). */
+export interface ArtistStatRow {
+  artist: string;
+  song_count: number;
+  album_count: number;
+  total_plays: number;
+  starred_count: number;
+  avg_rating: number | null;
+  last_played: string | null;
+  cover_art: string | null;
+  golden_year: number | null;
+  best_unplayed: number;
+}
+
 export interface CachedSong {
   id: string;
   title: string;
@@ -112,19 +126,19 @@ export class CompanionDB {
   upsertSong(song: SubsonicSong): void {
     const mood = deriveMood(song.genre ?? '');
     const stmt = this.db.prepare(`
-      INSERT INTO songs (id, title, artist, album, album_id, duration, suffix, bit_rate, cover_art, year, genre, user_rating, starred, play_count, mood, updated_at)
-      VALUES (@id, @title, @artist, @album, @album_id, @duration, @suffix, @bit_rate, @cover_art, @year, @genre, @user_rating, @starred, @play_count, @mood, @updated_at)
+      INSERT INTO songs (id, title, artist, album, album_id, duration, suffix, bit_rate, cover_art, year, genre, user_rating, starred, play_count, last_played, mood, updated_at)
+      VALUES (@id, @title, @artist, @album, @album_id, @duration, @suffix, @bit_rate, @cover_art, @year, @genre, @user_rating, @starred, @play_count, @last_played, @mood, @updated_at)
       ON CONFLICT(id) DO UPDATE SET
         title=@title, artist=@artist, album=@album, album_id=@album_id, duration=@duration,
         suffix=@suffix, bit_rate=@bit_rate, cover_art=@cover_art, year=@year, genre=@genre,
-        user_rating=@user_rating, starred=@starred, play_count=@play_count, mood=@mood, updated_at=@updated_at
+        user_rating=@user_rating, starred=@starred, play_count=@play_count, last_played=@last_played, mood=@mood, updated_at=@updated_at
     `);
     stmt.run({
       id: song.id, title: song.title ?? '', artist: song.artist ?? '', album: song.album ?? '',
       album_id: song.albumId ?? '', duration: song.duration ?? 0, suffix: song.suffix ?? '',
       bit_rate: song.bitRate ?? 0, cover_art: song.coverArt ?? '', year: song.year ?? null,
       genre: song.genre ?? '', user_rating: song.userRating ?? 0, starred: song.starred ? 1 : 0,
-      play_count: song.playCount ?? 0, mood, updated_at: new Date().toISOString(),
+      play_count: song.playCount ?? 0, last_played: song.played ?? null, mood, updated_at: new Date().toISOString(),
     });
   }
 
@@ -160,6 +174,114 @@ export class CompanionDB {
 
   getSongsByYear(fromYear: number, toYear: number, limit = 50): CachedSong[] {
     return this.db.prepare('SELECT * FROM songs WHERE year >= ? AND year <= ? ORDER BY RANDOM() LIMIT ?').all(fromYear, toYear, limit) as CachedSong[];
+  }
+
+  // ── Library browser: sorted/filtered songs over the whole scanned library ──
+
+  /** Sort orders for /api/songs-extended. Returns the filtered total for pagination. */
+  getSongsSorted(sort: string, limit: number, offset: number): { songs: CachedSong[]; total: number } {
+    let where = '1=1';
+    let order = 'title COLLATE NOCASE';
+    switch (sort) {
+      case 'most-played':
+        where = 'play_count > 0';
+        order = 'play_count DESC, user_rating DESC, title COLLATE NOCASE';
+        break;
+      case 'least-played':
+        order = 'play_count ASC, title COLLATE NOCASE';
+        break;
+      case 'recently-played':
+        where = 'last_played IS NOT NULL';
+        order = 'last_played DESC';
+        break;
+      case 'favorites':
+        where = '(starred = 1 OR user_rating >= 4)';
+        order = 'user_rating DESC, play_count DESC, title COLLATE NOCASE';
+        break;
+      case 'top-rated':
+        where = 'user_rating > 0';
+        order = 'user_rating DESC, play_count DESC, title COLLATE NOCASE';
+        break;
+      case 'play-now':
+        // Never played, best-rated first — the songs most likely to be loved.
+        where = 'play_count = 0';
+        order = '(user_rating * 2 + starred) DESC, user_rating DESC, id';
+        break;
+    }
+    const total = (this.db.prepare(`SELECT COUNT(*) AS c FROM songs WHERE ${where}`).get() as any).c as number;
+    const songs = this.db.prepare(`SELECT * FROM songs WHERE ${where} ORDER BY ${order} LIMIT ? OFFSET ?`).all(limit, offset) as CachedSong[];
+    return { songs, total };
+  }
+
+  /** Aggregate per-artist stats for /api/artists-extended, sorted. */
+  getArtistStats(sort: string, limit: number, offset: number): { artists: ArtistStatRow[]; total: number } {
+    let where = '1=1';
+    switch (sort) {
+      case 'recently-played': where = 'last_played IS NOT NULL'; break;
+      case 'favorites': where = '(starred_count > 0 OR avg_rating >= 4)'; break;
+      case 'play-now': where = 'best_unplayed > 0'; break;
+    }
+
+    // Per-artist aggregates. Signature cover = cover art of the most-played song.
+    const rows = this.db.prepare(`
+      SELECT artist,
+        COUNT(*) AS song_count,
+        COUNT(DISTINCT album_id) AS album_count,
+        SUM(play_count) AS total_plays,
+        SUM(starred) AS starred_count,
+        AVG(NULLIF(user_rating, 0)) AS avg_rating,
+        MAX(last_played) AS last_played,
+        MAX(CASE WHEN play_count = 0 THEN user_rating ELSE 0 END) AS best_unplayed,
+        (SELECT s2.cover_art FROM songs s2 WHERE s2.artist = s.artist COLLATE NOCASE
+           ORDER BY s2.play_count DESC, s2.user_rating DESC LIMIT 1) AS cover_art
+      FROM songs s
+      GROUP BY artist COLLATE NOCASE
+    `).all() as Omit<ArtistStatRow, 'golden_year'>[];
+
+    // Golden year: the year (of the artist's played songs) with the most plays —
+    // a rough "when this artist was in their prime for you" signal.
+    const yearRows = this.db.prepare(`
+      SELECT artist, year, SUM(play_count) AS plays
+      FROM songs WHERE play_count > 0 AND year IS NOT NULL AND year > 0
+      GROUP BY artist COLLATE NOCASE, year
+    `).all() as { artist: string; year: number; plays: number }[];
+    const golden = new Map<string, number>();
+    for (const r of yearRows) {
+      const cur = golden.get(r.artist.toLowerCase());
+      if (cur === undefined) golden.set(r.artist.toLowerCase(), r.year);
+    }
+
+    let stats: ArtistStatRow[] = rows.map(r => ({ ...r, golden_year: golden.get(r.artist.toLowerCase()) ?? null }));
+
+    switch (sort) {
+      case 'most-played':
+        stats.sort((a, b) => b.total_plays - a.total_plays || a.artist.localeCompare(b.artist));
+        break;
+      case 'least-played':
+        stats.sort((a, b) => a.total_plays - b.total_plays || a.artist.localeCompare(b.artist));
+        break;
+      case 'recently-played':
+        stats.sort((a, b) => (b.last_played ?? '').localeCompare(a.last_played ?? ''));
+        break;
+      case 'favorites':
+        stats.sort((a, b) => b.starred_count - a.starred_count || (b.avg_rating ?? 0) - (a.avg_rating ?? 0) || a.artist.localeCompare(b.artist));
+        break;
+      case 'golden-years':
+        // Chronological journey through the eras; artists without play data last.
+        stats.sort((a, b) => (a.golden_year ?? 9999) - (b.golden_year ?? 9999) || b.total_plays - a.total_plays);
+        break;
+      case 'play-now':
+        stats.sort((a, b) => b.best_unplayed - a.best_unplayed || a.total_plays - b.total_plays || a.artist.localeCompare(b.artist));
+        break;
+      default:
+        stats.sort((a, b) => a.artist.localeCompare(b.artist));
+    }
+
+    const filtered = where === '1=1' ? stats : stats.filter(s =>
+      where.includes('last_played') ? !!s.last_played
+      : where.includes('starred_count') ? (s.starred_count > 0 || (s.avg_rating ?? 0) >= 4)
+      : s.best_unplayed > 0);
+    return { artists: filtered.slice(offset, offset + limit), total: filtered.length };
   }
 
   getSongsByMood(mood: string, limit = 50): CachedSong[] {

@@ -4,7 +4,7 @@ import { CachedCover } from '../../components/CachedCover';
 import { PlayingBars, CodecPill } from '../../components/shared';
 import { formatTime } from '../../core/format';
 
-type Column = '#' | 'title' | 'artist' | 'album' | 'quality' | 'added' | 'duration' | 'checkbox' | 'favorite';
+type Column = '#' | 'title' | 'artist' | 'album' | 'quality' | 'added' | 'duration' | 'plays' | 'checkbox' | 'favorite';
 
 interface SongTableProps {
   songs: SubsonicSong[];
@@ -72,7 +72,7 @@ export function SongTable({
   // ponytail: header label map
   const headerLabels: Record<string, string> = {
     '#': '#', title: 'TITLE', artist: 'ARTIST', album: 'ALBUM',
-    quality: 'QUALITY', added: 'ADDED', duration: '', checkbox: '',
+    quality: 'QUALITY', added: 'ADDED', duration: '', plays: 'PLAYS', checkbox: '',
     favorite: '',
   };
 
@@ -94,6 +94,7 @@ export function SongTable({
         {showCol('album') && <div className="w-44 hidden md:block">{headerLabels.album}</div>}
         {showCol('quality') && <div className={compact ? 'w-24 flex-shrink-0' : 'w-20 hidden lg:block'}>{headerLabels.quality}</div>}
         {showCol('added') && <div className="w-28 hidden lg:block">{headerLabels.added}</div>}
+        {showCol('plays') && <div className="w-16 flex-shrink-0 text-right">{headerLabels.plays}</div>}
         {showCol('duration') && <div className="w-14 flex-shrink-0 text-right">⏱</div>}
         {showCol('favorite') && <div className="w-8 flex-shrink-0" />}
       </div>
@@ -180,6 +181,13 @@ export function SongTable({
               <div className="w-28 hidden lg:block text-xs" style={{ color: '#CBC3D7' }}>
                 {/* ponytail: Navidrome doesn't expose created date on songs. Placeholder. */}
                 —
+              </div>
+            )}
+
+            {/* Play count */}
+            {showCol('plays') && (
+              <div className="w-16 flex-shrink-0 text-right text-xs" style={{ color: song.playCount ? '#CBC3D7' : 'rgba(203,195,215,0.4)' }}>
+                {song.playCount ? `▶ ${song.playCount}` : '—'}
               </div>
             )}
 

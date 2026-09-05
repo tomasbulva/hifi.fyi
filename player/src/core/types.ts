@@ -43,6 +43,22 @@ export interface SubsonicSong {
   starred?: string;
   albumId?: string;
   artistId?: string;
+  userRating?: number;     // 0-5 (Navidrome)
+  playCount?: number;      // Navidrome plays
+}
+
+/** Per-artist aggregate stats from the companion (/api/artists-extended). */
+export interface ArtistStats {
+  artist: string;
+  song_count: number;
+  album_count: number;
+  total_plays: number;
+  starred_count: number;
+  avg_rating: number | null;
+  last_played: string | null;
+  cover_art: string | null;
+  golden_year: number | null;
+  best_unplayed: number;
 }
 
 export interface SubsonicPlaylist {

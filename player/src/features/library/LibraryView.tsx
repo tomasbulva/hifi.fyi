@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useMusic } from '../../core/MusicContext';
 import { reportError } from '../../core/errorReport';
-import { getAlbum, getArtist, getPlaylist, star, unstar } from '../../core/api';
+import { getAlbum, getArtist, getPlaylist, star, unstar, getArtists } from '../../core/api';
 import { getNavidromeCreds } from '../../core/AuthContext';
 import type { SubsonicArtist, SubsonicAlbum, AlbumListType, SubsonicSong, SubsonicPlaylist } from '../../core/types';
 import { Centered, Breadcrumb, Empty } from './components';
@@ -13,7 +13,9 @@ import { CachedCover } from '../../components/CachedCover';
 import { useToast } from '../../components/Toast';
 import { formatTime, slugify } from '../../core/format';
 import { LOSSLESS_FORMATS } from '../../core/quality';
-import { getDailyMixes, getPlaylistCoverUrl, getGenres, getSmartPlaylist } from '../../core/companionClient';
+import { getDailyMixes, getPlaylistCoverUrl, getGenres, getSmartPlaylist, getArtistsExtended, getSongsExtended } from '../../core/companionClient';
+import type { SongSort, ArtistSort } from '../../core/companionClient';
+import type { ArtistStats } from '../../core/types';
 import { useCompanion } from '../../core/CompanionContext';
 import { useSettings } from '../../core/SettingsContext';
 
@@ -40,7 +42,8 @@ const ALBUM_FILTERS: Record<string, AlbumListType> = {
 
 // Filter pills per tab — only filters that actually work.
 // Albums use server-side album list types; playlists filter client-side.
-// Artists and songs have no working filters yet, so they show none.
+// Artists and songs: when the companion is enabled, whole-library sort/filter
+// pills are built in the component (ARTIST_FILTERS / SONG_FILTERS below).
 const FILTERS_BY_TAB: Record<LibTab, { id: string; label: string }[]> = {
   albums: [
     { id: 'all', label: 'All' },
@@ -59,6 +62,45 @@ const FILTERS_BY_TAB: Record<LibTab, { id: string; label: string }[]> = {
   artists: [],
   songs: [],
 };
+
+const ARTIST_FILTERS = [
+  { id: 'all', label: 'All' },
+  { id: 'most-played', label: 'Most Played' },
+  { id: 'least-played', label: 'Least Played' },
+  { id: 'recently-played', label: 'Recently Played' },
+  { id: 'favorites', label: 'Favorites' },
+  { id: 'golden-years', label: 'Golden Years' },
+  { id: 'play-now', label: 'Play Right Now' },
+];
+
+const SONG_FILTERS = [
+  { id: 'all', label: 'All' },
+  { id: 'most-played', label: 'Most Played' },
+  { id: 'least-played', label: 'Least Played' },
+  { id: 'recently-played', label: 'Recently Played' },
+  { id: 'favorites', label: 'Favorites' },
+  { id: 'top-rated', label: 'Top Rated' },
+  { id: 'play-now', label: 'Play Right Now' },
+];
+
+/** Card subtitle for an artist under the active extended filter. */
+function artistSubtitle(s: ArtistStats, filter: string): string {
+  switch (filter) {
+    case 'most-played':
+    case 'least-played':
+      return `${s.total_plays} play${s.total_plays === 1 ? '' : 's'} · ${s.song_count} tracks`;
+    case 'recently-played':
+      return s.last_played ? `Last played ${new Date(s.last_played).toLocaleDateString()}` : 'Never played';
+    case 'favorites':
+      return `${s.starred_count} loved · avg ★${(s.avg_rating ?? 0).toFixed(1)}`;
+    case 'golden-years':
+      return s.golden_year ? `Golden year: ${s.golden_year}` : 'No play history yet';
+    case 'play-now':
+      return `Unplayed · top pick ★${s.best_unplayed}`;
+    default:
+      return s.album_count ? `${s.album_count} albums` : '';
+  }
+}
 
 const HEADER_LABELS: Record<LibTab, string> = {
   playlists: 'Your Playlists',
@@ -209,6 +251,67 @@ export default function LibraryView() {
   const [dailyMixes, setDailyMixes] = useState<any[]>([]);
   const [genres, setGenres] = useState<{ genre: string; count: number }[]>([]);
 
+  // ── Extended library filters (artists/songs via companion scan cache) ──
+  const [extArtists, setExtArtists] = useState<ArtistStats[] | null>(null);
+  const [extArtistsTotal, setExtArtistsTotal] = useState(0);
+  const [extSongs, setExtSongs] = useState<SubsonicSong[] | null>(null);
+  const [extSongsTotal, setExtSongsTotal] = useState(0);
+  const [artistIndex, setArtistIndex] = useState<Map<string, SubsonicArtist>>(new Map());
+  const extActive = (tab === 'artists' || tab === 'songs') && filter !== 'all' && companionEnabled && !albumId && !artistId && !playlistId;
+
+  // Fetch extended lists; refetch when a scan finishes (scanning flips true→false)
+  const scanningNow = !!scanStatus?.scanning;
+  useEffect(() => {
+    if (!extActive) return;
+    let cancelled = false;
+    if (tab === 'artists') {
+      setExtArtists(null);
+      getArtistsExtended(filter as ArtistSort, 0, 60)
+        .then(r => { if (!cancelled) { setExtArtists(r.artists); setExtArtistsTotal(r.total); } })
+        .catch((e) => { reportError(e, { source: 'library.artistsExtended', filter }); if (!cancelled) setExtArtists([]); });
+      // Name → artist map for ids/covers from the Navidrome index
+      getArtists().then(list => {
+        if (cancelled) return;
+        const m = new Map<string, SubsonicArtist>();
+        for (const a of list) m.set(a.name.toLowerCase(), a);
+        setArtistIndex(m);
+      }).catch(() => { /* covers fall back to gradient */ });
+    } else {
+      setExtSongs(null);
+      getSongsExtended(filter as SongSort, 0, 100)
+        .then(r => { if (!cancelled) { setExtSongs(r.songs); setExtSongsTotal(r.total); } })
+        .catch((e) => { reportError(e, { source: 'library.songsExtended', filter }); if (!cancelled) setExtSongs([]); });
+    }
+    return () => { cancelled = true; };
+  }, [extActive, tab, filter, companionEnabled, scanningNow]);
+
+  /** Infinite-scroll continuation for the active extended list. */
+  function loadMoreExtended() {
+    if (tab === 'artists' && extArtists) {
+      getArtistsExtended(filter as ArtistSort, extArtists.length, 60)
+        .then(r => { setExtArtists(prev => prev ? [...prev, ...r.artists] : r.artists); setExtArtistsTotal(r.total); })
+        .catch((e) => reportError(e, { source: 'library.loadMoreArtistsExtended', filter }));
+    } else if (tab === 'songs' && extSongs) {
+      getSongsExtended(filter as SongSort, extSongs.length, 100)
+        .then(r => { setExtSongs(prev => prev ? [...prev, ...r.songs] : r.songs); setExtSongsTotal(r.total); })
+        .catch((e) => reportError(e, { source: 'library.loadMoreSongsExtended', filter }));
+    }
+  }
+
+  /** Map companion artist stats onto a SubsonicArtist for the existing card renderers. */
+  function statToArtist(s: ArtistStats): SubsonicArtist & { stats: ArtistStats } {
+    const match = artistIndex.get(s.artist.toLowerCase());
+    return {
+      id: match?.id ?? '',
+      name: s.artist,
+      coverArt: match?.coverArt ?? s.cover_art ?? undefined,
+      artistImageUrl: match?.artistImageUrl,
+      albumCount: s.album_count,
+      starred: match?.starred,
+      stats: s,
+    };
+  }
+
   // Load daily mixes + genres when on playlists tab (only if companion is enabled)
   // Re-fetch when the scan finishes (scanning flips true→false) so mixes/genres
   // reflect the freshly-scanned library.
@@ -291,9 +394,9 @@ export default function LibraryView() {
     const { loadArtists, loadAlbumList, loadPlaylists, loadAllSongs } = loadersRef.current;
     switch (tab) {
       case 'albums': loadAlbumList(ALBUM_FILTERS[filter] || 'alphabeticalByName'); break;
-      case 'artists': loadArtists(); break;
+      case 'artists': if (filter === 'all') loadArtists(); break; // other filters come from the companion
       case 'playlists': loadPlaylists(); break;
-      case 'songs': loadAllSongs(); break;
+      case 'songs': if (filter === 'all') loadAllSongs(); break;
     }
   }, [tab, filter, albumId, artistId, playlistId]);
 
@@ -676,7 +779,10 @@ export default function LibraryView() {
           </button>
         </div>
       </div>
-      <LibraryTabs tabs={TABS} active={tab} onChange={setTab} filter={filter} onFilter={setFilter} filters={FILTERS_BY_TAB[tab]} />
+      <LibraryTabs tabs={TABS} active={tab} onChange={setTab} filter={filter} onFilter={setFilter}
+        filters={tab === 'artists' ? (companionEnabled ? ARTIST_FILTERS : undefined)
+          : tab === 'songs' ? (companionEnabled ? SONG_FILTERS : undefined)
+          : FILTERS_BY_TAB[tab]} />
 
       {tab === 'albums' && (() => {
         const albs = albumsByType[ALBUM_FILTERS[filter]] ?? [];
@@ -722,6 +828,49 @@ export default function LibraryView() {
       })()}
 
       {tab === 'artists' && (() => {
+        // Companion-backed filters: whole-library sorting over the scan cache
+        if (filter !== 'all') {
+          loadMoreRef.current = extArtists && extArtists.length < extArtistsTotal ? loadMoreExtended : null;
+          if (companionEnabled && extArtists === null) return <Empty>Loading…</Empty>;
+          const items = (extArtists ?? []).map(statToArtist);
+          if (items.length === 0) return <Empty>No artists for this filter — try a library scan in Settings</Empty>;
+          return (
+            <>
+            <FeaturedSection items={items}
+            renderFeatured={a => {
+              const sub = a.stats ? artistSubtitle(a.stats, filter) : a.albumCount !== undefined ? `${a.albumCount} albums` : '';
+              return (
+              <div className="relative rounded-2xl overflow-hidden cursor-pointer group"
+                onClick={() => a.id && navigate(`/library/artists/${slugify(a.name)}/${a.id}`)}>
+                <ArtistCover artist={a} getCoverUrl={getCoverUrl}
+                  className="w-full aspect-square object-cover transition-transform duration-500 group-hover:scale-105" />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent" />
+                <div className="absolute bottom-0 left-0 right-0 p-6">
+                  <h3 className="text-xl font-extrabold" title={a.name}
+                    style={{ color: '#E5E2E1', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', overflowWrap: 'anywhere' }}>{a.name}</h3>
+                  <p className="text-sm mt-0.5" style={{ color: '#CBC3D7' }}>{sub}</p>
+                </div>
+              </div>
+              );
+            }}
+            renderCompact={a => {
+              const sub = a.stats ? artistSubtitle(a.stats, filter) : '';
+              return (
+              <div key={a.id} className="flex flex-col items-center rounded-lg p-3 cursor-pointer hover:bg-white/[0.03] transition-all"
+                onClick={() => a.id && navigate(`/library/artists/${slugify(a.name)}/${a.id}`)}
+                title={sub}>
+                <ArtistCover artist={a} getCoverUrl={getCoverUrl} round
+                  className="mb-2 h-24 w-24 rounded-full object-cover transition-transform group-hover:scale-105 flex-shrink-0" />
+                <span className="text-sm font-medium truncate w-full text-center" style={{ color: '#E5E2E1' }}>{a.name}</span>
+                <span className="text-xs mt-0.5 truncate w-full text-center" style={{ color: '#CBC3D7' }}>{sub}</span>
+              </div>
+              );
+            }}
+            />
+            {extArtists && extArtists.length < extArtistsTotal && <div ref={sentinelRef} className="h-8" />}
+            </>
+          );
+        }
         loadMoreRef.current = (artistsHasMore && artists.length > 0) ? loadMoreArtists : null;
         return (
           <>
@@ -873,12 +1022,26 @@ export default function LibraryView() {
       })()}
 
       {tab === 'songs' && (() => {
+        // Companion-backed filters: whole-library sorting over the scan cache
+        if (filter !== 'all') {
+          loadMoreRef.current = extSongs && extSongs.length < extSongsTotal ? loadMoreExtended : null;
+          if (companionEnabled && extSongs === null) return <Empty>Loading…</Empty>;
+          if ((extSongs ?? []).length === 0) return <Empty>Nothing here yet — play some tracks first, or run a library scan in Settings</Empty>;
+          return (
+            <>
+            <SongTable songs={extSongs ?? []} play={play} addToQueue={addToQueue} replaceQueue={replaceQueue}
+              getCoverUrl={getCoverUrl} currentTrackId={currentTrack?.id} showSelection
+              columns={['checkbox', '#', 'title', 'artist', 'plays', 'duration']} />
+            {extSongs && extSongs.length < extSongsTotal && <div ref={sentinelRef} className="h-8" />}
+            </>
+          );
+        }
         loadMoreRef.current = songsHasMore ? loadMoreSongs : null;
         return allSongs.length === 0 ? <Empty>Loading songs…</Empty> : (
           <>
           <SongTable songs={allSongs} play={play} addToQueue={addToQueue} replaceQueue={replaceQueue}
             getCoverUrl={getCoverUrl} currentTrackId={currentTrack?.id} showSelection
-            columns={['checkbox', '#', 'title', 'album', 'quality', 'duration']} />
+            columns={['checkbox', '#', 'title', 'album', 'plays', 'quality', 'duration']} />
           {songsHasMore && <div ref={sentinelRef} className="h-8" />}
           </>
         );

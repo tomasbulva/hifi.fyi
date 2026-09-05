@@ -5,7 +5,7 @@
  * No configurable URL or API key needed — the cookie session handles auth.
  */
 
-import type { SubsonicSong } from './types';
+import type { SubsonicSong, ArtistStats } from './types';
 
 // ── API methods ──
 
@@ -174,4 +174,27 @@ export async function getSongRating(songId: string): Promise<SongRating | null> 
   } catch {
     return null;
   }
+}
+
+// ── Library browser: whole-library sorting/filtering over the companion cache ──
+
+export type SongSort = 'most-played' | 'least-played' | 'recently-played' | 'favorites' | 'top-rated' | 'play-now';
+export type ArtistSort = 'most-played' | 'least-played' | 'recently-played' | 'favorites' | 'golden-years' | 'play-now';
+
+export async function getSongsExtended(sort: SongSort, offset = 0, limit = 100): Promise<{ songs: SubsonicSong[]; total: number }> {
+  try {
+    const qs = new URLSearchParams({ sort, offset: String(offset), limit: String(limit) });
+    const res = await fetch(`/api/songs-extended?${qs}`, { signal: AbortSignal.timeout(15000) });
+    if (!res.ok) return { songs: [], total: 0 };
+    return await res.json();
+  } catch { return { songs: [], total: 0 }; }
+}
+
+export async function getArtistsExtended(sort: ArtistSort, offset = 0, limit = 100): Promise<{ artists: ArtistStats[]; total: number }> {
+  try {
+    const qs = new URLSearchParams({ sort, offset: String(offset), limit: String(limit) });
+    const res = await fetch(`/api/artists-extended?${qs}`, { signal: AbortSignal.timeout(15000) });
+    if (!res.ok) return { artists: [], total: 0 };
+    return await res.json();
+  } catch { return { artists: [], total: 0 }; }
 }

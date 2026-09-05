@@ -18,6 +18,7 @@ export interface SubsonicSong {
   starred?: string;
   userRating?: number;
   playCount?: number;
+  played?: string;       // ISO datetime of last play (Subsonic 'played' attribute)
   genre?: string;
 }
 
