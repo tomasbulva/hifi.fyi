@@ -406,6 +406,11 @@ export default function PlayerView() {
           </button>
         </div>
 
+        {/* Cast — mobile only (desktop gets the Volume + Cast row below) */}
+        <div className="md:hidden mt-5">
+          <CastButton />
+        </div>
+
         {/* Volume + Cast row — hidden on mobile */}
         <div className="hidden md:flex items-center gap-6 mt-8 w-full max-w-xs justify-center">
           <button onClick={() => setVolume(volume === 0 ? 0.7 : 0)} className="bg-transparent border-none cursor-pointer p-1"
