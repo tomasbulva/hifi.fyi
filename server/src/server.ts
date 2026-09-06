@@ -505,6 +505,26 @@ app.get('/api/ratings', sessionMiddleware, (req, res) => {
   res.json({ ratings });
 });
 
+// ── User settings (server-persisted per account) ──
+
+app.get('/api/settings', sessionMiddleware, (req, res) => {
+  res.json(db.getSettings() ?? {});
+});
+
+app.put('/api/settings', sessionMiddleware, (req, res) => {
+  try {
+    if (typeof req.body !== 'object' || req.body === null || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Settings must be a JSON object' });
+    }
+    db.saveSettings(req.body);
+    res.json({ ok: true });
+  } catch (err) {
+    Sentry.captureException(err);
+    console.error('[hifi] Failed to save settings:', err);
+    res.status(500).json({ error: 'Failed to save settings' });
+  }
+});
+
 app.get('/api/status', (req, res) => {
   const status = db.getScanStatus();
   res.json({

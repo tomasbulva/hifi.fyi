@@ -21,11 +21,13 @@ export default function MobileBottomNav() {
   }
 
   const coverUrl = currentTrack ? getCoverUrl(currentTrack.coverArt || (currentTrack as any).albumId) : null;
+  // On the big player view the strip is redundant — tabs only.
+  const showPlayerStrip = !!currentTrack && location.pathname !== '/player';
 
   return (
     <nav className="md:hidden fixed bottom-0 w-full z-50 flex flex-col bg-surface/80 backdrop-blur-2xl rounded-t-xl border-t border-white/15 shadow-[0_-8px_32px_rgba(0,0,0,0.5)]">
       {/* Mini player strip — same surface as the tabs, divider between */}
-      {currentTrack && (
+      {showPlayerStrip && (
         <div className="flex items-center gap-3 px-4 py-2 border-b border-white/10">
           <div
             className="w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 cursor-pointer"

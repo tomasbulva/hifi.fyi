@@ -120,6 +120,11 @@ export class CompanionDB {
         created_at TEXT,
         expires_at TEXT
       );
+      CREATE TABLE IF NOT EXISTS user_settings (
+        user_id TEXT PRIMARY KEY,
+        data TEXT NOT NULL,
+        updated_at TEXT
+      );
     `);
   }
 
@@ -474,6 +479,21 @@ export class CompanionDB {
       params.navidromeUrl, params.navidromeUsername, params.navidromePassword, params.appUsername, params.appPasswordHash, now, now,
       params.navidromeUrl, params.navidromeUsername, params.navidromePassword, params.appUsername, params.appPasswordHash, now,
     );
+  }
+
+  // ── User settings (single-account store; user_id = 'default') ──
+
+  getSettings(): Record<string, unknown> | null {
+    const row = this.db.prepare("SELECT data FROM user_settings WHERE user_id = 'default'").get() as any;
+    if (!row) return null;
+    try { return JSON.parse(row.data); } catch { return null; }
+  }
+
+  saveSettings(data: Record<string, unknown>): void {
+    this.db.prepare(`
+      INSERT INTO user_settings (user_id, data, updated_at) VALUES ('default', ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at
+    `).run(JSON.stringify(data), new Date().toISOString());
   }
 
   upsertScanningFlag(scanning: boolean): void {
