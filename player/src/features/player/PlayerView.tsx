@@ -88,7 +88,6 @@ export default function PlayerView() {
   const [showViz, setShowViz] = useState(false);
   const [vizMode, setVizMode] = useState<VizMode>('bars');
   const vizModes: VizMode[] = ['bars', 'waveform', 'particles'];
-  const [showMobileQueue, setShowMobileQueue] = useState(false);
 
   const { currentTrack, isPlaying, progress, duration, shuffle, repeat, volume } = playback;
   const coverUrl = currentTrack ? getCoverUrl(currentTrack.coverArt || (currentTrack as any).albumId) : '';
@@ -435,31 +434,18 @@ export default function PlayerView() {
         </section>
       )}
 
-      {/* Mobile queue — collapsible */}
+      {/* Mobile queue — always visible, actions below the list */}
       {queue.length > 0 && (
         <section id="queue-section-mobile" className="lg:hidden w-full mt-8">
-          <button
-            onClick={() => setShowMobileQueue(v => !v)}
-            className="flex items-center justify-between w-full mb-4 bg-transparent border-none cursor-pointer"
-          >
-            <h2 className="text-lg font-extrabold" style={{ color: '#E5E2E1' }}>Queue</h2>
-            <span className="material-symbols-outlined" style={{ color: '#CBC3D7' }}>
-              {showMobileQueue ? 'expand_less' : 'expand_more'}
-            </span>
-          </button>
-          {showMobileQueue && (
-            <>
-              <div className="flex items-center justify-end gap-3 mb-4">
-                <SavePlaylistButton />
-                <button onClick={clearQueue}
-                  className="text-xs font-bold uppercase px-4 py-2 rounded-lg cursor-pointer bg-transparent border-none hover:opacity-80"
-                  style={{ color: '#CBC3D7' }}>
-                  Clear All
-                </button>
-              </div>
-              {renderQueueItems()}
-            </>
-          )}
+          {renderQueueItems()}
+          <div className="flex items-center justify-end gap-3 mt-4">
+            <SavePlaylistButton />
+            <button onClick={clearQueue}
+              className="text-xs font-bold uppercase px-4 py-2 rounded-lg cursor-pointer bg-transparent border-none hover:opacity-80"
+              style={{ color: '#CBC3D7' }}>
+              Clear All
+            </button>
+          </div>
         </section>
       )}
     </div>

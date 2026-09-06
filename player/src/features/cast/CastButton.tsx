@@ -89,7 +89,7 @@ export default function CastButton({ direction = 'down' }: CastButtonProps) {
 
           {/* Flat dropdown: every entry is the same size, no icons, no section headers */}
           <div
-            className={`absolute right-0 min-w-[240px] rounded-md border border-border bg-surface p-1 z-[100] ${
+            className={`absolute right-0 min-w-[240px] rounded-md border border-border bg-surface p-1 z-[100] max-md:fixed max-md:inset-x-3 max-md:bottom-3 max-md:top-auto max-md:min-w-0 max-md:rounded-xl max-md:p-2 ${
               direction === 'up' ? 'bottom-full mb-1' : 'top-full mt-1'
             }`}
           >
