@@ -85,7 +85,11 @@ function PlayerApp() {
       <Sidebar />
       <MobileBottomNav />
 
-      {showMiniPlayer && <MiniPlayer />}
+      {showMiniPlayer && (
+        <div className="hidden md:block">
+          <MiniPlayer />
+        </div>
+      )}
 
       {/* Global scan status banner */}
       {scanBanner && (

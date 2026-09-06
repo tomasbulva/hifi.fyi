@@ -25,9 +25,9 @@ export default function MiniPlayer() {
   const isStarred = starredIds.has(currentTrack.id);
 
   return (
-    <div className="fixed bottom-[72px] md:bottom-0 left-0 right-0 z-40">
+    <div className="fixed bottom-0 left-0 right-0 z-40">
       <div
-        className="mx-2 md:mx-0 md:mb-0 rounded-2xl md:rounded-none flex items-center gap-4 px-4 py-2 md:px-8 md:py-3"
+        className="mx-2 mb-2 md:mx-0 md:mb-0 rounded-2xl md:rounded-none flex items-center gap-4 px-4 py-2 md:px-8 md:py-3"
         style={{ background: '#2A2A2A' }}
       >
         {/* Left: cover art + track info */}

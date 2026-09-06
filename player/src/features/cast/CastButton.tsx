@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useCast } from '../../core/CastContext';
 import { useMusic } from '../../core/MusicContext';
 import { googleCastProvider, requestGoogleCastSession } from '../../core/googleCastProvider';
@@ -11,7 +12,7 @@ interface CastButtonProps {
 }
 
 const itemClass =
-  'block w-full rounded-sm px-3 py-2 text-left text-small border-none cursor-pointer hover:bg-white/5';
+  'block w-full rounded-sm px-3 py-2 text-left text-small border-none cursor-pointer hover:bg-white/5 max-md:py-3';
 
 function itemStyle(active: boolean): React.CSSProperties {
   return { background: active ? 'var(--color-surface-active)' : 'transparent', color: 'var(--color-text)' };
@@ -63,6 +64,43 @@ export default function CastButton({ direction = 'down' }: CastButtonProps) {
   const googleActive = isCasting && currentTarget?.type === 'other';
   const sonosActive = (id: string) => isCasting && currentTarget?.id === id;
 
+  const menu = (
+    <>
+      <button onClick={handleDisconnect} className={itemClass} style={itemStyle(!isCasting)}>
+        This Device{!isCasting && ' ✓'}
+      </button>
+
+      {hasGoogleCast && (
+        <button onClick={handleGoogleCastClick} className={itemClass} style={itemStyle(googleActive)}>
+          Google Cast device…{googleActive && ' ✓'}
+        </button>
+      )}
+
+      {sonosTargets.map(t => (
+        <button key={t.id} onClick={() => handleSonosConnect(t)} className={itemClass} style={itemStyle(sonosActive(t.id))}>
+          Sonos - {t.name}
+          {sonosActive(t.id) && ' ✓'}
+        </button>
+      ))}
+
+      {!hasGoogleCast && sonosTargets.length === 0 && (
+        <div className="px-3 py-2 text-small" style={{ color: 'var(--color-text-muted)' }}>
+          No cast devices found. Google Cast works in Chrome/Edge; Sonos needs the cast proxy.
+        </div>
+      )}
+
+      {isCasting && (
+        <button
+          onClick={handleDisconnect}
+          className={itemClass}
+          style={{ background: 'transparent', color: 'var(--color-error)' }}
+        >
+          Stop casting
+        </button>
+      )}
+    </>
+  );
+
   return (
     <div className="relative inline-block">
       {/* Main cast button */}
@@ -85,47 +123,30 @@ export default function CastButton({ direction = 'down' }: CastButtonProps) {
 
       {open && (
         <>
-          <div className="fixed inset-0 z-[99]" onClick={() => setOpen(false)} />
-
-          {/* Flat dropdown: every entry is the same size, no icons, no section headers */}
-          <div
-            className={`absolute right-0 min-w-[240px] rounded-md border border-border bg-surface p-1 z-[100] max-md:fixed max-md:inset-x-3 max-md:bottom-3 max-md:top-auto max-md:min-w-0 max-md:rounded-xl max-md:p-2 ${
-              direction === 'up' ? 'bottom-full mb-1' : 'top-full mt-1'
-            }`}
-          >
-            <button onClick={handleDisconnect} className={itemClass} style={itemStyle(!isCasting)}>
-              This Device{!isCasting && ' ✓'}
-            </button>
-
-            {hasGoogleCast && (
-              <button onClick={handleGoogleCastClick} className={itemClass} style={itemStyle(googleActive)}>
-                Google Cast device…{googleActive && ' ✓'}
-              </button>
-            )}
-
-            {sonosTargets.map(t => (
-              <button key={t.id} onClick={() => handleSonosConnect(t)} className={itemClass} style={itemStyle(sonosActive(t.id))}>
-                Sonos - {t.name}
-                {sonosActive(t.id) && ' ✓'}
-              </button>
-            ))}
-
-            {!hasGoogleCast && sonosTargets.length === 0 && (
-              <div className="px-3 py-2 text-small" style={{ color: 'var(--color-text-muted)' }}>
-                No cast devices found. Google Cast works in Chrome/Edge; Sonos needs the cast proxy.
-              </div>
-            )}
-
-            {isCasting && (
-              <button
-                onClick={handleDisconnect}
-                className={itemClass}
-                style={{ background: 'transparent', color: 'var(--color-error)' }}
-              >
-                Stop casting
-              </button>
-            )}
+          {/* Desktop: anchored dropdown */}
+          <div className="hidden md:block">
+            <div className="fixed inset-0 z-[99]" onClick={() => setOpen(false)} />
+            <div
+              className={`absolute right-0 min-w-[240px] rounded-md border border-border bg-surface p-1 z-[100] ${
+                direction === 'up' ? 'bottom-full mb-1' : 'top-full mt-1'
+              }`}
+            >
+              {menu}
+            </div>
           </div>
+
+          {/* Mobile: centered modal, portaled to body so it escapes the
+              stacking context of the miniplayer / bottom nav (backdrop-blur
+              containers trap child z-indexes). */}
+          {createPortal(
+            <div className="md:hidden fixed inset-0 z-[9999] flex items-center justify-center">
+              <div className="absolute inset-0 bg-black/60" onClick={() => setOpen(false)} />
+              <div className="relative w-[calc(100%-2rem)] max-w-xs rounded-xl border border-border bg-surface p-2 shadow-2xl">
+                {menu}
+              </div>
+            </div>,
+            document.body
+          )}
         </>
       )}
     </div>
