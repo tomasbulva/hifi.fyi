@@ -5,7 +5,19 @@ import { googleCastProvider, requestGoogleCastSession } from '../../core/googleC
 import { sonosProvider } from '../../core/sonosProvider';
 import type { CastTarget } from '../../core/types';
 
-export default function CastButton() {
+interface CastButtonProps {
+  /** 'up' opens the dropdown above the button (for bottom bars like the MiniPlayer). */
+  direction?: 'up' | 'down';
+}
+
+const itemClass =
+  'block w-full rounded-sm px-3 py-2 text-left text-small border-none cursor-pointer hover:bg-white/5';
+
+function itemStyle(active: boolean): React.CSSProperties {
+  return { background: active ? 'var(--color-surface-active)' : 'transparent', color: 'var(--color-text)' };
+}
+
+export default function CastButton({ direction = 'down' }: CastButtonProps) {
   const { isCasting, currentTarget, setProvider, connectTo, disconnect, hasGoogleCast, sonosTargets } = useCast();
   const { setCastTarget } = useMusic();
   const [open, setOpen] = useState(false);
@@ -48,7 +60,8 @@ export default function CastButton() {
     setOpen(false);
   }
 
-  const showCastIcon = true; // always show — the dropdown explains what's available
+  const googleActive = isCasting && currentTarget?.type === 'other';
+  const sonosActive = (id: string) => isCasting && currentTarget?.id === id;
 
   return (
     <div className="relative inline-block">
@@ -59,7 +72,6 @@ export default function CastButton() {
         style={{
           background: 'none',
           color: isCasting ? 'var(--color-cast-active)' : 'var(--color-cast-idle)',
-          display: showCastIcon ? 'flex' : 'none',
         }}
         title={isCasting ? `Casting to ${currentTarget?.name}` : 'Cast'}
       >
@@ -75,90 +87,42 @@ export default function CastButton() {
         <>
           <div className="fixed inset-0 z-[99]" onClick={() => setOpen(false)} />
 
-          <div className="absolute right-0 top-full mt-1 min-w-[240px] rounded-md border border-border bg-surface p-1 z-[100]">
-            {/* This Device */}
-            <button
-              onClick={handleDisconnect}
-              className="block w-full rounded-sm px-3 py-2 text-left text-small border-none cursor-pointer"
-              style={{
-                background: !isCasting ? 'var(--color-surface-active)' : 'transparent',
-                color: 'var(--color-text)',
-              }}
-            >
-              🔊 This Device
-              {!isCasting && ' ✓'}
+          {/* Flat dropdown: every entry is the same size, no icons, no section headers */}
+          <div
+            className={`absolute right-0 min-w-[240px] rounded-md border border-border bg-surface p-1 z-[100] ${
+              direction === 'up' ? 'bottom-full mb-1' : 'top-full mt-1'
+            }`}
+          >
+            <button onClick={handleDisconnect} className={itemClass} style={itemStyle(!isCasting)}>
+              This Device{!isCasting && ' ✓'}
             </button>
 
-            {/* Google Cast section */}
             {hasGoogleCast && (
-              <div className="mt-1 border-t border-border pt-1">
-                <div className="px-3 py-1 text-[10px] uppercase tracking-wider" style={{ color: 'var(--color-text-muted)' }}>
-                  Google Cast
-                </div>
-                <button
-                  onClick={handleGoogleCastClick}
-                  className="flex w-full items-center gap-2 rounded-sm px-3 py-2 text-left border-none cursor-pointer hover:bg-white/5"
-                  style={{
-                    background: isCasting && currentTarget?.type === 'other' ? 'var(--color-surface-active)' : 'transparent',
-                    color: 'var(--color-text)',
-                  }}
-                >
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.7 }}>
-                    <path d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6" />
-                    <path d="M2 12h2a8 8 0 0 1 8 8v2" />
-                    <path d="M2 16h2a4 4 0 0 1 4 4v2" />
-                    <line x1="2" y1="20" x2="2.01" y2="20" />
-                  </svg>
-                  <span className="text-small">
-                    Chromecast / Nest / Google TV
-                  </span>
-                  {isCasting && currentTarget?.type === 'other' && ' ✓'}
-                </button>
-              </div>
+              <button onClick={handleGoogleCastClick} className={itemClass} style={itemStyle(googleActive)}>
+                Google Cast device…{googleActive && ' ✓'}
+              </button>
             )}
 
-            {/* Sonos section (only if proxy is running) */}
-            {sonosTargets.length > 0 && (
-              <div className="mt-1 border-t border-border pt-1">
-                <div className="px-3 py-1 text-[10px] uppercase tracking-wider" style={{ color: 'var(--color-text-muted)' }}>
-                  Sonos Speakers
-                </div>
-                {sonosTargets.map(t => (
-                  <button
-                    key={t.id}
-                    onClick={() => handleSonosConnect(t)}
-                    className="block w-full rounded-sm px-3 py-2 text-left text-small border-none cursor-pointer"
-                    style={{
-                      background: isCasting && currentTarget?.id === t.id ? 'var(--color-surface-active)' : 'transparent',
-                      color: 'var(--color-text)',
-                    }}
-                  >
-                    {t.name}
-                    {isCasting && currentTarget?.id === t.id && ' ✓'}
-                  </button>
-                ))}
-              </div>
-            )}
+            {sonosTargets.map(t => (
+              <button key={t.id} onClick={() => handleSonosConnect(t)} className={itemClass} style={itemStyle(sonosActive(t.id))}>
+                Sonos - {t.name}
+                {sonosActive(t.id) && ' ✓'}
+              </button>
+            ))}
 
-            {/* No devices available */}
             {!hasGoogleCast && sonosTargets.length === 0 && (
-              <div className="mt-1 border-t border-border pt-1">
-                <div className="px-3 py-2 text-small" style={{ color: 'var(--color-text-muted)' }}>
-                  No cast devices found.
-                  Google Cast works in Chrome/Edge.
-                  For Sonos, run the cast proxy on port 4321.
-                </div>
+              <div className="px-3 py-2 text-small" style={{ color: 'var(--color-text-muted)' }}>
+                No cast devices found. Google Cast works in Chrome/Edge; Sonos needs the cast proxy.
               </div>
             )}
 
-            {/* Disconnect */}
             {isCasting && (
               <button
                 onClick={handleDisconnect}
-                className="mt-1 block w-full border-t border-border rounded-sm px-3 py-2 text-left text-small border-none cursor-pointer"
+                className={itemClass}
                 style={{ background: 'transparent', color: 'var(--color-error)' }}
               >
-                Stop Casting
+                Stop casting
               </button>
             )}
           </div>

@@ -32,6 +32,10 @@ export default function MiniPlayer() {
       >
         {/* Left: cover art + track info */}
         <div className="flex items-center gap-3 min-w-0" style={{ flex: '1 1 240px' }}>
+          {/* Cast button — mobile only (desktop gets it in the right-hand icon row) */}
+          <div className="md:hidden flex-shrink-0">
+            <CastButton direction="up" />
+          </div>
           <div
             className="w-12 h-12 rounded-lg overflow-hidden flex-shrink-0 cursor-pointer"
             onClick={() => navigate('/player')}
@@ -183,8 +187,8 @@ export default function MiniPlayer() {
             />
           </div>
 
-          {/* Cast button */}
-          <CastButton />
+          {/* Cast button — opens upward so it stays in the viewport above the bottom bar */}
+          <CastButton direction="up" />
         </div>
       </div>
     </div>
