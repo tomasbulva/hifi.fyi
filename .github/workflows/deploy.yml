@@ -1,0 +1,55 @@
+# CI/CD for hifi.fyi
+#
+# Runs on the self-hosted runner installed on the Hetzner VPS itself, so:
+#   - no GitHub Actions minutes are consumed (self-hosted = free)
+#   - the image is built where it will run (no registry push/pull needed)
+#   - deployment is a local `docker compose up -d hifi` against /opt/hifi
+#
+# Trigger is push-only (no pull_request) — on a public repo, fork PRs would
+# otherwise execute code on this machine. Only collaborators can push.
+# Keep it that way unless you add a separate disposable builder.
+
+name: Build & Deploy
+
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build image & deploy to VPS
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t hifi:local .
+
+      - name: Deploy (recreate hifi container)
+        working-directory: /opt/hifi
+        run: docker compose -f docker-compose.vps.yml up -d hifi
+
+      - name: Health check
+        run: |
+          for i in $(seq 1 12); do
+            if curl -sf http://127.0.0.1:4321/ > /dev/null; then
+              echo "hifi is healthy"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "hifi failed health check — recent logs:"
+          docker logs --tail 50 hifi
+          exit 1
+
+      - name: Prune dangling images
+        run: docker image prune -f
