@@ -7,6 +7,18 @@ import { useSettings } from './SettingsContext';
 import { getNextRecommendation } from './companionClient';
 import { imageCache } from './imageCache';
 import { track as trackEvent } from './analytics';
+
+/** Emit song.play with a pre-combined `song` property so Umami shows
+ *  "Artist — Title" on one line when expanding the event. */
+const trackSongPlay = (song: Pick<SubsonicSong, 'id' | 'title' | 'artist'>, source: string) => {
+  trackEvent('song.play', {
+    id: song.id,
+    title: song.title,
+    artist: song.artist ?? '',
+    song: song.artist ? `${song.artist} — ${song.title}` : song.title,
+    source,
+  });
+};
 import { reportError } from './errorReport';
 import type {
   SubsonicArtist, SubsonicAlbum, SubsonicSong,
@@ -285,7 +297,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   const playFromQueueIndex = useCallback((idx: number) => {
     const item = queue[idx];
     if (!item) return;
-    trackEvent('song.play', { id: item.song.id, title: item.song.title, artist: item.song.artist, source: 'queue' });
+    trackSongPlay(item.song, 'queue');
     setQueueIndex(idx);
 
     if (isCasting()) {
@@ -339,7 +351,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
                     // playFromQueueIndex reads from queue state, but setQueue is async
                     // So we call engine.play directly and update state
                     if (!isCasting()) {
-                      trackEvent('song.play', { id: song.id, title: song.title, artist: song.artist, source: 'autoplay' });
+                      trackSongPlay(song, 'autoplay');
                       engine.play(song);
                       setCodecInfo(engine.getCodecInfo());
                     } else {
@@ -406,7 +418,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     setQueue([{ song: track, queuedAt: Date.now() }]);
     setQueueIndex(0);
 
-    trackEvent('song.play', { id: track.id, title: track.title, artist: track.artist, source: 'direct' });
+    trackSongPlay(track, 'direct');
 
     if (isCasting()) {
       castStreamUrl(track);
@@ -578,7 +590,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     setQueue([{ song: track, queuedAt: Date.now() }]);
     setQueueIndex(0);
 
-    trackEvent('song.play', { id: track.id, title: track.title, artist: track.artist, source: 'play-now' });
+    trackSongPlay(track, 'play-now');
 
     if (isCasting()) {
       castStreamUrl(track);
