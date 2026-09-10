@@ -20,6 +20,10 @@ export interface EngineState {
 
 export class AudioEngine {
   private audio: HTMLAudioElement;
+  // Second element that pre-buffers the next queue item so track switches
+  // don't wait on a network fetch (matters in throttled background tabs).
+  private preloadedAudio = new Audio();
+  private preloadedTrackId: string | null = null;
   private audioCtx: AudioContext | null = null;
   private source: MediaElementAudioSourceNode | null = null;
   private analyser: AnalyserNode | null = null;
@@ -30,6 +34,8 @@ export class AudioEngine {
     this.audio = new Audio();
     this.audio.crossOrigin = 'anonymous';
     this.audio.volume = 0.8;
+    this.preloadedAudio.crossOrigin = 'anonymous';
+    this.preloadedAudio.preload = 'auto';
 
     this._state = {
       isPlaying: false,
@@ -123,6 +129,22 @@ export class AudioEngine {
     this.audio.play().catch(() => {});
   }
 
+  /**
+   * Pre-buffer a track in a hidden <audio> so switching to it is instant.
+   * The browser HTTP cache serves the second element from the first's fetch.
+   */
+  preload(track: SubsonicSong | null) {
+    if (!track || this.preloadedTrackId === track.id) return;
+    if (this._state.currentTrack?.id === track.id) return;
+    this.preloadedTrackId = track.id;
+    this.preloadedAudio.src = getStreamUrl(track.id);
+  }
+
+  /** True when the current element reached its end and nothing was started after it. */
+  isEnded(): boolean {
+    return !!this._state.currentTrack && this.audio.ended;
+  }
+
   pause() {
     this.audio.pause();
   }
@@ -141,6 +163,8 @@ export class AudioEngine {
   stop() {
     this.audio.pause();
     this.audio.src = '';
+    this.preloadedAudio.src = '';
+    this.preloadedTrackId = null;
     this._state.currentTrack = null;
     this._state.isPlaying = false;
     this._state.progress = 0;

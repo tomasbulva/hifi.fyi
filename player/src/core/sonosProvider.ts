@@ -165,6 +165,32 @@ export const sonosControls = {
       body: JSON.stringify({ ip, volume }),
     });
   },
+  /** Replace Sonos queue with the client's queue and start at startIndex */
+  async castQueue(ip: string, tracks: { id: string; streamUrl: string; title: string; artist: string }[], startIndex: number, playMode?: string) {
+    await fetch(`${PROXY_URL}/queue`, {
+      method: 'POST', headers: proxyApiHeaders(),
+      body: JSON.stringify({ ip, tracks, startIndex, playMode }),
+    });
+  },
+  /** Append one track to Sonos queue (Keep Playing / queue additions) */
+  async enqueue(ip: string, track: { streamUrl: string; title: string; artist: string }) {
+    await fetch(`${PROXY_URL}/enqueue`, {
+      method: 'POST', headers: proxyApiHeaders(),
+      body: JSON.stringify({ ip, ...track }),
+    });
+  },
+  async next(ip: string) {
+    await fetch(`${PROXY_URL}/next`, {
+      method: 'POST', headers: proxyApiHeaders(),
+      body: JSON.stringify({ ip }),
+    });
+  },
+  async prev(ip: string) {
+    await fetch(`${PROXY_URL}/prev`, {
+      method: 'POST', headers: proxyApiHeaders(),
+      body: JSON.stringify({ ip }),
+    });
+  },
   async getStatus(ip: string) {
     try {
       const res = await fetch(`${PROXY_URL}/status?ip=${encodeURIComponent(ip)}`, {

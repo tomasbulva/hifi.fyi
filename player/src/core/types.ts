@@ -126,12 +126,36 @@ export interface CastState {
   error: string | null;
 }
 
+export interface CastQueueItem {
+  id: string;          // song id — used to match receiver track changes
+  streamUrl: string;
+  title: string;
+  artist: string;
+}
+
+export type CastPlayMode = 'NORMAL' | 'REPEAT_ALL' | 'REPEAT_ONE';
+
+// State reported by a cast receiver while it owns the queue
+export interface CastMediaState {
+  playerState: 'PLAYING' | 'PAUSED' | 'IDLE' | 'BUFFERING';
+  position: number;          // seconds into current item
+  queueItemId?: number;      // receiver queue position (1-based)
+}
+
 export interface CastProvider {
   name: string;
   discover(): Promise<CastTarget[]>;
   connect(target: CastTarget): Promise<void>;
   disconnect(): void;
   cast(streamUrl: string, metadata?: { title: string; artist: string }): void;
+  // Optional: push the whole queue to the receiver so IT advances tracks and
+  // the sender can go to sleep. When present, MusicContext uses this instead
+  // of per-track cast().
+  castQueue?(items: CastQueueItem[], startIndex: number, playMode?: CastPlayMode): void;
+  // Optional: updates from the receiver while it owns the queue
+  onMediaUpdate?(cb: (state: CastMediaState) => void): () => void;
+  // Optional: map receiver queue item id back to a song id
+  songIdForItem?(queueItemId?: number): string | null;
   getStatus(): { connected: boolean; target: CastTarget | null };
   onStateChange(cb: (state: { connected: boolean; target: CastTarget | null }) => void): () => void;
 }

@@ -15,7 +15,7 @@
  * 5. Controls go through the RemotePlayerController
  */
 
-import type { CastProvider, CastTarget } from './types';
+import type { CastProvider, CastTarget, CastQueueItem, CastPlayMode, CastMediaState } from './types';
 
 // Augment window for the Cast SDK
 declare global {
@@ -32,6 +32,11 @@ let initialized = false;
 let sessionAvailable = false;
 let currentSession: any = null;
 let stateCallback: ((state: { connected: boolean; target: CastTarget | null }) => void) | null = null;
+// Receiver-owns-queue support: media update listeners + id→song map for the
+// queue we pushed (receiver itemIds are 1-based and match our push order).
+let mediaUpdateCallback: ((state: CastMediaState) => void) | null = null;
+let watchedMedia: any = null;
+let castQueueSongIds: string[] = [];
 
 function initCast(): void {
   if (initialized) return;
@@ -122,6 +127,41 @@ function loadSdk() {
 loadSdk();
 ensureInitialized();
 
+function detectContentType(streamUrl: string): string {
+  let contentType = 'audio/mpeg';
+  if (streamUrl.includes('suffix=m4a') || streamUrl.includes('.m4a')) {
+    contentType = 'audio/mp4';
+  } else if (streamUrl.includes('suffix=flac') || streamUrl.includes('.flac')) {
+    contentType = 'audio/flac';
+  } else if (streamUrl.includes('suffix=ogg') || streamUrl.includes('.ogg')) {
+    contentType = 'audio/ogg';
+  }
+  return contentType;
+}
+
+function makeMediaInfo(item: CastQueueItem): any {
+  const chrome = window.chrome;
+  const mediaInfo = new chrome.cast.media.MediaInfo(item.streamUrl, detectContentType(item.streamUrl));
+  mediaInfo.metadata = new chrome.cast.media.MusicTrackMediaMetadata();
+  mediaInfo.metadata.title = item.title;
+  mediaInfo.metadata.artist = item.artist;
+  return mediaInfo;
+}
+
+function watchMedia(media: any) {
+  if (!media || media === watchedMedia) return;
+  watchedMedia = media;
+  media.addUpdateListener?.((isAlive: boolean) => {
+    if (!isAlive || !mediaUpdateCallback) return;
+    const state: CastMediaState = {
+      playerState: media.playerState || 'IDLE',
+      position: media.getEstimatedTime?.() ?? 0,
+      queueItemId: media.currentItemId,
+    };
+    mediaUpdateCallback(state);
+  });
+}
+
 export const googleCastProvider: CastProvider = {
   name: 'google-cast',
 
@@ -151,18 +191,7 @@ export const googleCastProvider: CastProvider = {
     if (!currentSession) return;
 
     const chrome = window.chrome;
-    // Determine content type from URL or default to audio/mpeg
-    // Navidrome may serve m4a, flac, ogg, mp3 etc.
-    let contentType = 'audio/mpeg';
-    if (streamUrl.includes('suffix=m4a') || streamUrl.includes('.m4a')) {
-      contentType = 'audio/mp4';
-    } else if (streamUrl.includes('suffix=flac') || streamUrl.includes('.flac')) {
-      contentType = 'audio/flac';
-    } else if (streamUrl.includes('suffix=ogg') || streamUrl.includes('.ogg')) {
-      contentType = 'audio/ogg';
-    }
-
-    const mediaInfo = new chrome.cast.media.MediaInfo(streamUrl, contentType);
+    const mediaInfo = new chrome.cast.media.MediaInfo(streamUrl, detectContentType(streamUrl));
     if (metadata) {
       mediaInfo.metadata = new chrome.cast.media.MusicTrackMediaMetadata();
       mediaInfo.metadata.title = metadata.title;
@@ -171,9 +200,49 @@ export const googleCastProvider: CastProvider = {
 
     const request = new chrome.cast.media.LoadRequest(mediaInfo);
     currentSession.loadMedia(request).then(
-      () => {},
+      (media: any) => watchMedia(media),
       (err: any) => console.error('[GoogleCast] loadMedia failed:', err),
     );
+  },
+
+  /**
+   * Push the whole queue as receiver-side QueueData. The receiver advances
+   * tracks itself — the sender can be closed without stopping playback.
+   */
+  castQueue(items: CastQueueItem[], startIndex: number, playMode?: CastPlayMode): void {
+    if (!currentSession) return;
+    const chrome = window.chrome;
+
+    castQueueSongIds = items.map(i => i.id);
+    const queueItems = items.map(item => {
+      const qi = new chrome.cast.media.QueueItem(makeMediaInfo(item));
+      qi.preloadTime = 20; // receiver starts buffering the next track early
+      return qi;
+    });
+
+    const repeatMap: Record<string, any> = {
+      NORMAL: chrome.cast.media.RepeatMode.REPEAT_OFF,
+      REPEAT_ALL: chrome.cast.media.RepeatMode.REPEAT_ALL,
+      REPEAT_ONE: chrome.cast.media.RepeatMode.REPEAT_ONE,
+    };
+
+    const queueData = new chrome.cast.media.QueueData(queueItems);
+    queueData.startIndex = startIndex;
+    queueData.repeatMode = repeatMap[playMode ?? 'NORMAL'] ?? chrome.cast.media.RepeatMode.REPEAT_OFF;
+
+    const first = items[startIndex] ?? items[0];
+    const request = new chrome.cast.media.LoadRequest(makeMediaInfo(first));
+    request.queueData = queueData;
+
+    currentSession.loadMedia(request).then(
+      (media: any) => watchMedia(media),
+      (err: any) => console.error('[GoogleCast] queue load failed:', err),
+    );
+  },
+
+  onMediaUpdate(cb: (state: CastMediaState) => void): () => void {
+    mediaUpdateCallback = cb;
+    return () => { mediaUpdateCallback = null; };
   },
 
   getStatus(): { connected: boolean; target: CastTarget | null } {
@@ -251,4 +320,42 @@ export const googleCastControls = {
     // Volume on the receiver device (0-1)
     currentSession.setVolume(volume).catch(() => {});
   },
+
+  /** Map a receiver queueItemId to the song id we pushed at that position */
+  songIdForItem(queueItemId?: number): string | null {
+    if (!queueItemId || queueItemId < 1) return null;
+    return castQueueSongIds[queueItemId - 1] ?? null;
+  },
+
+  /** Append tracks to the receiver's queue (Keep Playing / queue additions) */
+  queueAppend(items: CastQueueItem[]) {
+    if (!currentSession) return;
+    const media = currentSession.getMediaSession?.();
+    if (!media) return;
+    const chrome = window.chrome;
+    const queueItems = items.map(item => {
+      const qi = new chrome.cast.media.QueueItem(makeMediaInfo(item));
+      return qi;
+    });
+    castQueueSongIds = [...castQueueSongIds, ...items.map(i => i.id)];
+    const req = new chrome.cast.media.QueueInsertItemsRequest(queueItems);
+    media.queueInsertItems(req);
+  },
+
+  next() {
+    jumpToQueueItem(+1);
+  },
+
+  prev() {
+    jumpToQueueItem(-1);
+  },
 };
+
+function jumpToQueueItem(offset: number) {
+  if (!currentSession) return;
+  const media = currentSession.getMediaSession?.();
+  if (!media?.items?.length) return;
+  const idx = media.items.findIndex((it: any) => it.itemId === media.currentItemId);
+  const next = media.items[idx + offset];
+  if (idx !== -1 && next) media.queueJumpToItem(next.itemId);
+}
