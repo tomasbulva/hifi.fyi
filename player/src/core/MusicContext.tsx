@@ -2,17 +2,29 @@ import React, { createContext, useContext, useState, useCallback, useRef, useEff
 import { getAudioEngine, AudioEngine } from './AudioEngine';
 import { getStreamUrl, getArtists, getAlbum, getCoverArtUrl, search as searchApi, getAlbumList2, getPlaylists, getSongs, getInternetRadioStations, createPlaylist, star as starSong, unstar as unstarSong } from './api';
 import { googleCastProvider, googleCastControls } from './googleCastProvider';
-import { sonosControls, getProxyUrl, proxyApiHeaders } from './sonosProvider';
+import { sonosControls } from './sonosProvider';
 import { useSettings } from './SettingsContext';
 import { getNextRecommendation } from './companionClient';
 import { imageCache } from './imageCache';
 import { track as trackEvent } from './analytics';
+
+/** Emit song.play with a pre-combined `song` property so Umami shows
+ *  "Artist — Title" on one line when expanding the event. */
+const trackSongPlay = (song: Pick<SubsonicSong, 'id' | 'title' | 'artist'>, source: string) => {
+  trackEvent('song.play', {
+    id: song.id,
+    title: song.title,
+    artist: song.artist ?? '',
+    song: song.artist ? `${song.artist} — ${song.title}` : song.title,
+    source,
+  });
+};
 import { reportError } from './errorReport';
 import type {
   SubsonicArtist, SubsonicAlbum, SubsonicSong,
   QueueItem, PlaybackState, CodecInfo, ViewName,
   AlbumListType, SubsonicPlaylist, SubsonicRadioStation,
-  CastTarget,
+  CastTarget, CastQueueItem, CastPlayMode,
 } from './types';
 
 interface MusicContextValue {
@@ -256,27 +268,50 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   const [castTargetState, setCastTargetState] = useState<CastTarget | null>(null);
   const playbackRef = useRef(playback);
   playbackRef.current = playback;
+  const queueRef = useRef(queue);
+  queueRef.current = queue;
+  const queueIndexRef = useRef(queueIndex);
+  queueIndexRef.current = queueIndex;
+  // Last song id seen on the cast receiver — dedupes scrobble/advance sync
+  const lastCastSongIdRef = useRef<string | null>(null);
+  // Guards against double appends when a cast receiver hits the queue end
+  const castAppendPendingRef = useRef(false);
 
   function isCasting() {
     return castTargetRef.current !== null;
   }
 
-  function castStreamUrl(track: SubsonicSong) {
-    if (!castTargetRef.current) return;
-    const streamUrl = getStreamUrl(track.id);
+  /**
+   * Push the WHOLE queue to the cast receiver (Sonos native queue / Google
+   * Cast QueueData) and start at `idx`. The receiver then advances tracks
+   * itself — the browser can sleep without stopping playback. The client
+   * only mirrors receiver state for the UI (see the poller/effects below).
+   */
+  function castQueueFromIndex(idx: number, itemsOverride?: QueueItem[]) {
     const target = castTargetRef.current;
+    const source = itemsOverride ?? queueRef.current;
+    if (!target || source.length === 0) return;
+    const clamped = Math.max(0, Math.min(idx, source.length - 1));
+    const items: CastQueueItem[] = source.map(item => ({
+      id: item.song.id,
+      streamUrl: getStreamUrl(item.song.id),
+      title: item.song.title,
+      artist: item.song.artist ?? '',
+    }));
+    const repeat = playbackRef.current.repeat;
+    const playMode: CastPlayMode =
+      repeat === 'one' ? 'REPEAT_ONE' :
+      repeat === 'all' ? 'REPEAT_ALL' : 'NORMAL';
+
+    // Mark the expected receiver track so the poller doesn't re-scrobble it
+    lastCastSongIdRef.current = items[clamped].id;
 
     if (target.type === 'sonos') {
       const ip = (target as any).ip;
       if (!ip) return;
-      fetch(`${getProxyUrl()}/cast`, {
-        method: 'POST',
-        headers: proxyApiHeaders(),
-        body: JSON.stringify({ ip, streamUrl, title: track.title, artist: track.artist ?? '' }),
-      }).catch(() => {});
+      sonosControls.castQueue(ip, items, clamped, playMode).catch(() => {});
     } else {
-      // Google Cast — use the provider directly
-      googleCastProvider.cast(streamUrl, { title: track.title, artist: track.artist ?? '' });
+      googleCastProvider.castQueue?.(items, clamped, playMode);
     }
   }
 
@@ -285,12 +320,12 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   const playFromQueueIndex = useCallback((idx: number) => {
     const item = queue[idx];
     if (!item) return;
-    trackEvent('song.play', { id: item.song.id, title: item.song.title, artist: item.song.artist, source: 'queue' });
+    trackSongPlay(item.song, 'queue');
     setQueueIndex(idx);
 
     if (isCasting()) {
-      // Send stream URL to Sonos
-      castStreamUrl(item.song);
+      // Receiver owns playback — push the whole queue, receiver advances it
+      castQueueFromIndex(idx);
     } else {
       const s = engine.state;
       if (s.currentTrack?.id !== item.song.id) {
@@ -299,9 +334,58 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
         engine.resume();
       }
       setCodecInfo(engine.getCodecInfo());
+      // Pre-buffer the next queue item so the switch is instant even in a
+      // throttled background tab
+      engine.preload(queue[idx + 1]?.song ?? null);
     }
     setPlayback(prev => ({ ...prev, currentTrack: item.song, isPlaying: true }));
   }, [queue, engine]);
+
+  /**
+   * Advance the queue after a track ended (local playback only — cast
+   * receivers advance themselves). Kept out of the event listener so the
+   * visibility-change resync can reuse it when a background tab swallowed
+   * the `ended` event.
+   */
+  const handleEnded = useCallback(() => {
+    if (isCasting()) return; // Sonos / Google Cast receiver owns advancement
+    if (queue.length === 0 || queueIndex < 0) return;
+    let nextIdx = queueIndex + 1;
+    if (playback.repeat === 'one') {
+      nextIdx = queueIndex;
+    } else if (playback.repeat === 'all' && nextIdx >= queue.length) {
+      nextIdx = 0;
+    } else if (nextIdx >= queue.length) {
+      // Keep Playing: fetch next recommendation when queue ends
+      if (settings.autoplay && playback.currentTrack) {
+        getNextRecommendation(playback.currentTrack.id).then(song => {
+          if (song) {
+            // Add directly to queue and play — bypass addToQueue to avoid race condition
+            const newItem = { song, queuedAt: Date.now() };
+            setQueue(prev => [...prev, newItem]);
+            const newIdx = queue.length; // new song is at end of old queue
+            trackSongPlay(song, 'autoplay');
+            engine.play(song);
+            setCodecInfo(engine.getCodecInfo());
+            setQueueIndex(newIdx);
+            setPlayback(prev => ({ ...prev, currentTrack: song, isPlaying: true }));
+          } else {
+            setPlayback(prev => ({ ...prev, isPlaying: false }));
+          }
+        }).catch(() => {
+          setPlayback(prev => ({ ...prev, isPlaying: false }));
+        });
+      } else {
+        setPlayback(prev => ({ ...prev, isPlaying: false }));
+      }
+      return;
+    }
+    playFromQueueIndex(nextIdx);
+  }, [engine, queue, queueIndex, playback.repeat, playback.currentTrack, playFromQueueIndex, settings.autoplay]);
+
+  // Keep the latest handleEnded for the visibility resync without re-subscribing
+  const handleEndedRef = useRef(handleEnded);
+  handleEndedRef.current = handleEnded;
 
   // Sync engine state to React
   useEffect(() => {
@@ -317,70 +401,43 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
         setPlayback(prev => ({ ...prev, currentTrack: s.currentTrack, duration: s.duration }));
         setCodecInfo(engine.getCodecInfo());
       }),
-      engine.on('ended', () => {
-        // Auto-advance in queue order (shuffle scrambles the queue itself)
-        if (queue.length > 0 && queueIndex >= 0) {
-          let nextIdx = queueIndex + 1;
-          if (playback.repeat === 'one') {
-            nextIdx = queueIndex;
-          } else if (playback.repeat === 'all' && nextIdx >= queue.length) {
-            nextIdx = 0;
-          } else if (nextIdx >= queue.length) {
-            // Keep Playing: fetch next recommendation when queue ends
-            if (settings.autoplay && playback.currentTrack) {
-              getNextRecommendation(playback.currentTrack.id).then(song => {
-                if (song) {
-                  // Add directly to queue and play — bypass addToQueue to avoid race condition
-                  const newItem = { song, queuedAt: Date.now() };
-                  setQueue(prev => [...prev, newItem]);
-                  // Use setTimeout to let state update settle, then play
-                  setTimeout(() => {
-                    const newIdx = queue.length; // new song is at end of old queue
-                    // playFromQueueIndex reads from queue state, but setQueue is async
-                    // So we call engine.play directly and update state
-                    if (!isCasting()) {
-                      trackEvent('song.play', { id: song.id, title: song.title, artist: song.artist, source: 'autoplay' });
-                      engine.play(song);
-                      setCodecInfo(engine.getCodecInfo());
-                    } else {
-                      castStreamUrl(song);
-                    }
-                    setQueueIndex(newIdx);
-                    setPlayback(prev => ({ ...prev, currentTrack: song, isPlaying: true }));
-                  }, 0);
-                } else {
-                  setPlayback(prev => ({ ...prev, isPlaying: false }));
-                }
-              }).catch(() => {
-                setPlayback(prev => ({ ...prev, isPlaying: false }));
-              });
-            } else {
-              setPlayback(prev => ({ ...prev, isPlaying: false }));
-            }
-            return;
-          }
-          playFromQueueIndex(nextIdx);
-        }
-      }),
+      engine.on('ended', handleEnded),
     ];
     return () => unsubs.forEach(u => u());
-  }, [engine, queue, queueIndex, playback.repeat, playFromQueueIndex]);
+  }, [engine, handleEnded]);
 
-  // Poll Sonos for playback status while casting
+  // Background resync — mobile browsers/car browsers can swallow the `ended`
+  // event while the page is hidden (WebKit suspends the web process). When
+  // the page becomes visible again, advance if the current track ended and
+  // nothing was started after it.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (castTargetRef.current) return; // receiver owns advancement
+      if (!engine.isEnded()) return;
+      handleEndedRef.current();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [engine]);
+
+  // Poll Sonos for playback status while casting. Sonos owns the queue — this
+  // only mirrors receiver state into the UI and scrobbles track changes.
   const sonosTargetIp = castTargetState?.type === 'sonos' ? (castTargetState as any)?.ip : null;
   useEffect(() => {
     if (!sonosTargetIp) return;
     let active = true;
+    let stoppedStreak = 0;
+    const parseTime = (t: string) => {
+      if (!t || t === 'NOT_IMPLEMENTED' || t === '0:00:00') return 0;
+      const parts = t.split(':').map(Number);
+      return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    };
     const pollStatus = async () => {
       if (!active) return;
       try {
         const status = await sonosControls.getStatus(sonosTargetIp);
         if (!status || !active) return;
-        const parseTime = (t: string) => {
-          if (!t || t === 'NOT_IMPLEMENTED' || t === '0:00:00') return 0;
-          const parts = t.split(':').map(Number);
-          return parts[0] * 3600 + parts[1] * 60 + parts[2];
-        };
         const progress = parseTime(status.position);
         const duration = parseTime(status.duration);
         setPlayback(prev => ({
@@ -389,30 +446,118 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
           progress,
           duration: duration || prev.duration,
         }));
-        // Auto-advance when track ends
-        if (duration > 0 && progress >= duration && status.isPlaying) {
-          // Track finished — advance queue
-          // (Sonos may report PLAYING briefly at end; only advance if progress is at end)
+
+        // Mirror Sonos-side track changes (including Sonos-own advancement,
+        // manual skips, and repeat wraps) into the client queue + scrobble
+        const songId = (() => {
+          try { return new URL(status.trackURI).searchParams.get('id'); } catch { return null; }
+        })();
+        if (songId && songId !== lastCastSongIdRef.current) {
+          const idx = queue.findIndex(q => q.song.id === songId);
+          if (idx >= 0) {
+            lastCastSongIdRef.current = songId;
+            setQueueIndex(idx);
+            setPlayback(prev => ({ ...prev, currentTrack: queue[idx].song }));
+            trackSongPlay(queue[idx].song, 'sonos-advance');
+          }
+        }
+
+        // Keep Playing: Sonos stopped because the queue ran out — fetch a
+        // recommendation, append it (Sonos auto-starts via /enqueue), continue
+        if (status.state === 'STOPPED') {
+          stoppedStreak += 1;
+          if (
+            stoppedStreak >= 3 && !castAppendPendingRef.current &&
+            settings.autoplay && queue.length > 0
+          ) {
+            const lastSong = queue[queue.length - 1].song;
+            castAppendPendingRef.current = true;
+            getNextRecommendation(lastSong.id).then(song => {
+              if (song && castTargetRef.current?.type === 'sonos' && castTargetRef.current) {
+                const ip = (castTargetRef.current as any).ip;
+                sonosControls.enqueue(ip, {
+                  streamUrl: getStreamUrl(song.id),
+                  title: song.title,
+                  artist: song.artist ?? '',
+                }).catch(() => {});
+                setQueue(prev => [...prev, { song, queuedAt: Date.now() }]);
+              }
+            }).catch(() => {}).finally(() => {
+              castAppendPendingRef.current = false;
+            });
+          }
+        } else {
+          stoppedStreak = 0;
         }
       } catch { /* ignore */ }
     };
     pollStatus();
     const interval = setInterval(pollStatus, 1000);
     return () => { active = false; clearInterval(interval); };
-  }, [sonosTargetIp]);
+  }, [sonosTargetIp, queue, settings.autoplay]);
+
+  // Mirror Google Cast receiver state while it owns the queue
+  const googleCastActive = !!castTargetState && castTargetState.type !== 'sonos';
+  useEffect(() => {
+    if (!googleCastActive || !googleCastProvider.onMediaUpdate) return;
+    let appending = false;
+    const unsub = googleCastProvider.onMediaUpdate(state => {
+      setPlayback(prev => ({
+        ...prev,
+        isPlaying: state.playerState === 'PLAYING' || state.playerState === 'BUFFERING',
+        progress: state.position,
+      }));
+
+      // Receiver advanced to another item — sync queue index + scrobble
+      const songId = googleCastProvider.songIdForItem?.(state.queueItemId);
+      if (songId && songId !== lastCastSongIdRef.current) {
+        const idx = queue.findIndex(q => q.song.id === songId);
+        if (idx >= 0) {
+          lastCastSongIdRef.current = songId;
+          setQueueIndex(idx);
+          setPlayback(prev => ({ ...prev, currentTrack: queue[idx].song }));
+          trackSongPlay(queue[idx].song, 'cast-advance');
+        }
+      }
+
+      // Keep Playing: receiver finished the whole queue
+      if (state.playerState === 'IDLE' && !appending && !castAppendPendingRef.current &&
+          settings.autoplay && queue.length > 0) {
+        const lastSong = queue[queue.length - 1].song;
+        appending = true;
+        castAppendPendingRef.current = true;
+        getNextRecommendation(lastSong.id).then(song => {
+          if (song && castTargetRef.current?.type !== 'sonos' && castTargetRef.current) {
+            googleCastControls.queueAppend([{
+              id: song.id,
+              streamUrl: getStreamUrl(song.id),
+              title: song.title,
+              artist: song.artist ?? '',
+            }]);
+            setQueue(prev => [...prev, { song, queuedAt: Date.now() }]);
+          }
+        }).catch(() => {}).finally(() => {
+          appending = false;
+          castAppendPendingRef.current = false;
+        });
+      }
+    });
+    return () => { unsub(); };
+  }, [googleCastActive, queue, settings.autoplay]);
 
   const play = useCallback((track: SubsonicSong) => {
     // If queue is empty or playing outside queue, build a fresh queue
     setQueue([{ song: track, queuedAt: Date.now() }]);
     setQueueIndex(0);
 
-    trackEvent('song.play', { id: track.id, title: track.title, artist: track.artist, source: 'direct' });
+    trackSongPlay(track, 'direct');
 
     if (isCasting()) {
-      castStreamUrl(track);
+      castQueueFromIndex(0, [{ song: track, queuedAt: Date.now() }]);
     } else {
       engine.play(track);
       setCodecInfo(engine.getCodecInfo());
+      engine.preload(null);
     }
     setPlayback(prev => ({ ...prev, currentTrack: track, isPlaying: true }));
   }, [engine]);
@@ -433,20 +578,10 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   const resume = useCallback(() => {
     const target = castTargetRef.current;
     if (target?.type === 'sonos') {
-      const currentTrack = playback.currentTrack;
-      if (currentTrack) {
-        const streamUrl = getStreamUrl(currentTrack.id);
-        const ip = (target as any).ip;
-        if (ip) {
-          fetch(`${getProxyUrl()}/cast`, {
-            method: 'POST',
-            headers: proxyApiHeaders(),
-            body: JSON.stringify({ ip, streamUrl, title: currentTrack.title, artist: currentTrack.artist ?? '' }),
-          }).catch(() => {});
-        }
-      } else {
-        sonosControls.resume((target as any).ip).catch(() => {});
-      }
+      // Sonos keeps playing on its own queue — just resume the transport.
+      // (Stream URLs carry no expiry, so no re-cast needed; a re-cast would
+      // destroy the receiver queue.)
+      sonosControls.resume((target as any).ip).catch(() => {});
       setPlayback(prev => ({ ...prev, isPlaying: true }));
     } else if (target) {
       googleCastControls.resume();
@@ -524,6 +659,17 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const nextTrack = useCallback(() => {
+    // While casting, the receiver owns the queue — tell it to skip and let
+    // the poller/media updates sync the UI (and scrobble)
+    const target = castTargetRef.current;
+    if (target) {
+      if (target.type === 'sonos') {
+        sonosControls.next((target as any).ip).catch(() => {});
+      } else {
+        googleCastControls.next();
+      }
+      return;
+    }
     if (queue.length === 0) return;
     let next = queueIndex + 1;
     if (next >= queue.length) next = 0;
@@ -531,6 +677,15 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   }, [queue, queueIndex, playFromQueueIndex]);
 
   const prevTrack = useCallback(() => {
+    const target = castTargetRef.current;
+    if (target) {
+      if (target.type === 'sonos') {
+        sonosControls.prev((target as any).ip).catch(() => {});
+      } else {
+        googleCastControls.prev();
+      }
+      return;
+    }
     if (queue.length === 0) return;
     // If >3s in, restart current, else go back
     if (!isCasting()) {
@@ -557,11 +712,12 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     setQueueIndex(0);
     
     if (isCasting()) {
-      castStreamUrl(tracks[0]);
+      castQueueFromIndex(0, newQueue);
     } else {
       engine.stop();
       engine.play(tracks[0]);
       setCodecInfo(engine.getCodecInfo());
+      engine.preload(tracks[1] ?? null);
     }
     setPlayback(prev => ({ ...prev, currentTrack: tracks[0], isPlaying: true }));
   }, [engine]);
@@ -578,13 +734,14 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     setQueue([{ song: track, queuedAt: Date.now() }]);
     setQueueIndex(0);
 
-    trackEvent('song.play', { id: track.id, title: track.title, artist: track.artist, source: 'play-now' });
+    trackSongPlay(track, 'play-now');
 
     if (isCasting()) {
-      castStreamUrl(track);
+      castQueueFromIndex(0, [{ song: track, queuedAt: Date.now() }]);
     } else {
       engine.play(track);
       setCodecInfo(engine.getCodecInfo());
+      engine.preload(null);
     }
     setPlayback(prev => ({ ...prev, currentTrack: track, isPlaying: true }));
   }, [engine]);
@@ -647,10 +804,10 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     setCastTargetState(target);
     
     if (target) {
-      // Send current track to the cast target (Sonos or Google Cast)
+      // Send the whole current queue to the cast target (Sonos / Google Cast)
       const currentTrack = playbackRef.current.currentTrack;
       if (currentTrack) {
-        castStreamUrl(currentTrack);
+        castQueueFromIndex(queueIndexRef.current);
       }
     } else {
       // Disconnecting — resume local playback if we have a current track
