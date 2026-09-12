@@ -473,6 +473,135 @@ app.post('/volume', async (req, res) => {
   }
 });
 
+// ── Sonos native queue (receiver-owned playback) ──
+// Push the whole queue to Sonos once; Sonos advances tracks itself, so the
+// browser client only syncs UI state and never needs to be alive to advance.
+
+function rewriteStreamUrl(streamUrl) {
+  if (!NAVIDROME_LAN_URL) return streamUrl;
+  try {
+    const parsed = new URL(streamUrl);
+    const lanParsed = new URL(NAVIDROME_LAN_URL);
+    parsed.protocol = lanParsed.protocol;
+    parsed.host = lanParsed.host;
+    return parsed.toString();
+  } catch { return streamUrl; }
+}
+
+function buildDidl(streamUrl, title, artist, itemId) {
+  return `<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"><item id="${itemId}" parentID="0" restricted="true"><res protocolInfo="http-get:*:audio/mpeg:*">${escapeXml(streamUrl)}</res><dc:title>${escapeXml(title || 'Unknown')}</dc:title><dc:creator>${escapeXml(artist || '')}</dc:creator><upnp:class>object.item.audioItem.musicTrack</upnp:class></item></DIDL-Lite>`;
+}
+
+const SONOS_AVTRANSPORT = 'urn:schemas-upnp-org:service:AVTransport:1';
+const SONOS_AVTRANSPORT_CTRL = '/MediaRenderer/AVTransport/Control';
+
+// Add tracks to the Sonos queue; returns the 1-based number of the first
+// track we enqueued. Fast path: AddMultipleURIsToQueue in one SOAP call;
+// fallback: sequential AddURIToQueue (bounded by queue length).
+async function enqueueSonosTracks(ip, tracks, firstTrackNumber = 0) {
+  if (tracks.length === 0) return 0;
+  const urls = tracks.map(t => rewriteStreamUrl(t.streamUrl));
+  const didls = tracks.map((t, i) => buildDidl(rewriteStreamUrl(t.streamUrl), t.title, t.artist, i + 1));
+
+  try {
+    const xml = await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'AddMultipleURIsToQueue',
+      `<InstanceID>0</InstanceID><UpdateID>0</UpdateID><NumberOfURIs>${tracks.length}</NumberOfURIs>` +
+      `<EnqueuedURIs>${escapeXml(urls.join(','))}</EnqueuedURIs>` +
+      `<EnqueuedURIsMetaData>${escapeXml(didls.join(','))}</EnqueuedURIsMetaData>` +
+      `<ContainerURI></ContainerURI><ContainerMetaData></ContainerMetaData>` +
+      `<DesiredFirstTrackNumberEnqueued>${firstTrackNumber}</DesiredFirstTrackNumberEnqueued><EnqueueAsNext>0</EnqueueAsNext>`);
+    const first = extractTag(xml, 'FirstTrackNumberEnqueued');
+    return first ? parseInt(first, 10) : 1;
+  } catch (err) {
+    let first = firstTrackNumber;
+    for (let i = 0; i < tracks.length; i++) {
+      const resp = await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'AddURIToQueue',
+        `<InstanceID>0</InstanceID><EnqueuedURI>${escapeXml(urls[i])}</EnqueuedURI>` +
+        `<EnqueuedURIMetaData>${escapeXml(didls[i])}</EnqueuedURIMetaData>` +
+        `<DesiredFirstTrackNumberEnqueued>0</DesiredFirstTrackNumberEnqueued><EnqueueAsNext>0</EnqueueAsNext>`);
+      if (i === 0) {
+        const tag = extractTag(resp, 'FirstTrackNumberEnqueued');
+        first = tag ? parseInt(tag, 10) : 1;
+      }
+    }
+    return first;
+  }
+}
+
+// Replace Sonos queue with the client's queue and start at startIndex
+app.post('/queue', async (req, res) => {
+  const { ip, tracks, startIndex, playMode } = req.body;
+  if (!ip || !validateIp(ip)) return res.status(400).json({ error: 'Missing or invalid ip' });
+  if (!Array.isArray(tracks) || tracks.length === 0 || tracks.length > 500) {
+    return res.status(400).json({ error: 'Missing or invalid tracks (max 500)' });
+  }
+  if (!tracks.every(t => t.streamUrl && validateStreamUrl(t.streamUrl))) {
+    return res.status(400).json({ error: 'Invalid track streamUrl' });
+  }
+  const start = Math.max(0, Math.min(startIndex ?? 0, tracks.length - 1));
+  try {
+    await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'Stop', '<InstanceID>0</InstanceID>');
+    await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'RemoveAllTracksFromQueue', '<InstanceID>0</InstanceID>');
+    const firstTrack = await enqueueSonosTracks(ip, tracks);
+    if (playMode) {
+      const valid = ['NORMAL', 'REPEAT_ALL', 'REPEAT_ONE', 'SHUFFLE', 'SHUFFLE_NOREPEAT'];
+      const mode = valid.includes(playMode) ? playMode : 'NORMAL';
+      await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'SetPlayMode',
+        `<InstanceID>0</InstanceID><NewPlayMode>${mode}</NewPlayMode>`);
+    }
+    // Jump to the requested start track (Sonos queue positions are 1-based)
+    await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'Seek',
+      `<InstanceID>0</InstanceID><Unit>TRACK_NR</Unit><Target>${firstTrack + start - 1}</Target>`);
+    await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'Play', '<InstanceID>0</InstanceID><Speed>1</Speed>');
+    res.json({ ok: true, firstTrack, start });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Append a single track to the Sonos queue (Keep Playing / queue additions)
+app.post('/enqueue', async (req, res) => {
+  const { ip, streamUrl, title, artist } = req.body;
+  if (!ip || !validateIp(ip)) return res.status(400).json({ error: 'Missing or invalid ip' });
+  if (!streamUrl || !validateStreamUrl(streamUrl)) return res.status(400).json({ error: 'Missing or invalid streamUrl' });
+  try {
+    const firstTrack = await enqueueSonosTracks(ip, [{ streamUrl, title, artist }]);
+    // If nothing is playing (queue ran out), start playback at the new track
+    const { state } = await getTransportInfo(ip);
+    if (state === 'STOPPED') {
+      await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'Seek',
+        `<InstanceID>0</InstanceID><Unit>TRACK_NR</Unit><Target>${firstTrack}</Target>`);
+      await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'Play', '<InstanceID>0</InstanceID><Speed>1</Speed>');
+    }
+    res.json({ ok: true, firstTrack });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Manual skip while casting — Sonos advances its own queue
+app.post('/next', async (req, res) => {
+  const { ip } = req.body;
+  if (!ip || !validateIp(ip)) return res.status(400).json({ error: 'Missing or invalid ip' });
+  try {
+    await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'Next', '<InstanceID>0</InstanceID>');
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/prev', async (req, res) => {
+  const { ip } = req.body;
+  if (!ip || !validateIp(ip)) return res.status(400).json({ error: 'Missing or invalid ip' });
+  try {
+    await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'Previous', '<InstanceID>0</InstanceID>');
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Parse helpers ──
 
 function extractTag(xml, tag) {

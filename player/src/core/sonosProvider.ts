@@ -165,12 +165,27 @@ export const sonosControls = {
       body: JSON.stringify({ ip, volume }),
     });
   },
-  /** Replace Sonos queue with the client's queue and start at startIndex */
+  /** Replace Sonos queue with the client's queue and start at startIndex.
+   *  Falls back to per-track casting when the proxy predates queue support. */
   async castQueue(ip: string, tracks: { id: string; streamUrl: string; title: string; artist: string }[], startIndex: number, playMode?: string) {
-    await fetch(`${PROXY_URL}/queue`, {
-      method: 'POST', headers: proxyApiHeaders(),
-      body: JSON.stringify({ ip, tracks, startIndex, playMode }),
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${PROXY_URL}/queue`, {
+        method: 'POST', headers: proxyApiHeaders(),
+        body: JSON.stringify({ ip, tracks, startIndex, playMode }),
+      });
+    } catch {
+      return;
+    }
+    if (res.status === 404) {
+      // Older proxy without /queue — degrade to single-track casting so at
+      // least the selected track plays (advancement stays client-driven)
+      const t = tracks[startIndex] ?? tracks[0];
+      await fetch(`${PROXY_URL}/cast`, {
+        method: 'POST', headers: proxyApiHeaders(),
+        body: JSON.stringify({ ip, streamUrl: t.streamUrl, title: t.title, artist: t.artist }),
+      });
+    }
   },
   /** Append one track to Sonos queue (Keep Playing / queue additions) */
   async enqueue(ip: string, track: { streamUrl: string; title: string; artist: string }) {
