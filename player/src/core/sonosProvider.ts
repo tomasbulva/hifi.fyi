@@ -177,14 +177,14 @@ export const sonosControls = {
     } catch {
       return;
     }
-    if (res.status === 404) {
-      // Older proxy without /queue — degrade to single-track casting so at
-      // least the selected track plays (advancement stays client-driven)
+    if (!res.ok) {
+      // Proxy missing /queue (404) or queue push failed (5xx) — degrade to
+      // single-track casting so at least the selected track plays
       const t = tracks[startIndex] ?? tracks[0];
       await fetch(`${PROXY_URL}/cast`, {
         method: 'POST', headers: proxyApiHeaders(),
         body: JSON.stringify({ ip, streamUrl: t.streamUrl, title: t.title, artist: t.artist }),
-      });
+      }).catch(() => {});
     }
   },
   /** Append one track to Sonos queue (Keep Playing / queue additions) */

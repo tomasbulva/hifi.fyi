@@ -954,7 +954,11 @@ ${params}
       res.on('data', (chunk) => (data += chunk));
       res.on('end', () => {
         if (res.statusCode === 200) resolve(data);
-        else reject(new Error(`SOAP ${action} failed: HTTP ${res.statusCode}`));
+        else {
+          // Surface the UPnP fault detail — Sonos puts the real reason in faultstring
+          const fault = (data.match(/<faultstring>([\s\S]*?)<\/faultstring>/i)?.[1] || '').slice(0, 200);
+          reject(new Error(`SOAP ${action} failed: HTTP ${res.statusCode}${fault ? ` — ${fault}` : ''}`));
+        }
       });
     });
 
@@ -1265,9 +1269,21 @@ app.post('/api/sonos/queue', sessionMiddleware, async (req, res) => {
       await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'SetPlayMode',
         `<InstanceID>0</InstanceID><NewPlayMode>${mode}</NewPlayMode>`);
     }
-    // Jump to the requested start track (Sonos queue positions are 1-based)
-    await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'Seek',
-      `<InstanceID>0</InstanceID><Unit>TRACK_NR</Unit><Target>${firstTrack + start - 1}</Target>`);
+    // Jump to the requested start track. Sonos TRACK_NR is 1-based; some
+    // firmwares return FirstTrackNumberEnqueued=0 when appending to an empty
+    // queue, so fall back to the list position when the reported number is 0.
+    const target = (firstTrack > 0 ? firstTrack + start : start + 1);
+    try {
+      await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'Seek',
+        `<InstanceID>0</InstanceID><Unit>TRACK_NR</Unit><Target>${target}</Target>`);
+    } catch {
+      // TRACK_NR seek can fail on some firmwares/queue states — start from
+      // the top rather than failing the whole cast
+      if (target !== 1) {
+        await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'Seek',
+          `<InstanceID>0</InstanceID><Unit>TRACK_NR</Unit><Target>1</Target>`);
+      }
+    }
     await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'Play', '<InstanceID>0</InstanceID><Speed>1</Speed>');
     res.json({ ok: true, firstTrack, start });
   } catch (err: any) {
@@ -1285,8 +1301,10 @@ app.post('/api/sonos/enqueue', sessionMiddleware, async (req, res) => {
     // If nothing is playing (queue ran out), start playback
     const transportXml = await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'GetTransportInfo', '<InstanceID>0</InstanceID>');
     if (extractTag(transportXml, 'CurrentTransportState') === 'STOPPED') {
-      await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'Seek',
-        `<InstanceID>0</InstanceID><Unit>TRACK_NR</Unit><Target>${firstTrack}</Target>`);
+      try {
+        await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'Seek',
+          `<InstanceID>0</InstanceID><Unit>TRACK_NR</Unit><Target>${firstTrack > 0 ? firstTrack : 1}</Target>`);
+      } catch { /* fall through to plain Play */ }
       await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'Play', '<InstanceID>0</InstanceID><Speed>1</Speed>');
     }
     res.json({ ok: true, firstTrack });
