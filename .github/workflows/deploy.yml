@@ -27,6 +27,8 @@ jobs:
   deploy:
     name: Build image & deploy to VPS
     runs-on: [self-hosted, linux, x64]
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -50,6 +52,31 @@ jobs:
           echo "hifi failed health check — recent logs:"
           docker logs --tail 50 hifi
           exit 1
+
+      - name: Prune dangling images
+        run: docker image prune -f
+
+  # The Sonos proxy runs on the home LAN (Synology, --network host for SSDP),
+  # not on this VPS — so we build & publish to GHCR and the Synology just pulls.
+  sonos-proxy:
+    name: Build & publish Sonos proxy image
+    runs-on: [self-hosted, linux, x64]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build & push
+        run: |
+          IMAGE=ghcr.io/${{ github.repository_owner }}/sonos-proxy
+          docker build -t $IMAGE:latest -t $IMAGE:${{ github.sha }} ./sonos
+          docker push $IMAGE:latest
+          docker push $IMAGE:${{ github.sha }}
 
       - name: Prune dangling images
         run: docker image prune -f
