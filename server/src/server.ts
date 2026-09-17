@@ -1146,7 +1146,7 @@ function getZoneUuid(ip: string): Promise<string> {
       let data = '';
       res.on('data', (chunk) => (data += chunk));
       res.on('end', () => {
-        const m = data.match(/<UDN>\s*uuid:(RINCON[0-9A-Fa-f]+)/i);
+        const m = data.match(/<UDN>\s*uuid:(RINCON_[0-9A-Za-z]+)/i);
         if (m) { zoneUuidCache.set(ip, m[1]); resolve(m[1]); }
         else reject(new Error('Could not resolve zone UUID from device description'));
       });
