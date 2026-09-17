@@ -1135,6 +1135,34 @@ function buildDidl(streamUrl: string, title?: string, artist?: string, itemId = 
 const SONOS_AVTRANSPORT = 'urn:schemas-upnp-org:service:AVTransport:1';
 const SONOS_AVTRANSPORT_CTRL = '/MediaRenderer/AVTransport/Control';
 
+// Zone UUID (RINCON_xxx) per IP — needed to build the x-rincon-queue: URI.
+// Cached; Sonos UUIDs are stable across reboots.
+const zoneUuidCache = new Map<string, string>();
+function getZoneUuid(ip: string): Promise<string> {
+  const cached = zoneUuidCache.get(ip);
+  if (cached) return Promise.resolve(cached);
+  return new Promise((resolve, reject) => {
+    http.get(`http://${ip}:${SONOS_PORT}/xml/device_description.xml`, (res) => {
+      let data = '';
+      res.on('data', (chunk) => (data += chunk));
+      res.on('end', () => {
+        const m = data.match(/<UDN>\s*uuid:(RINCON[0-9A-Fa-f]+)/i);
+        if (m) { zoneUuidCache.set(ip, m[1]); resolve(m[1]); }
+        else reject(new Error('Could not resolve zone UUID from device description'));
+      });
+    }).on('error', reject);
+  });
+}
+
+// Make the Sonos queue the active playback source. Filling the queue alone
+// does NOT switch sources — without this, Play resumes whatever source was
+// last selected on the speaker (e.g. TuneIn radio).
+async function setQueueSource(ip: string): Promise<void> {
+  const uuid = await getZoneUuid(ip);
+  await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'SetAVTransportURI',
+    `<InstanceID>0</InstanceID><CurrentURI>x-rincon-queue:RINCON_${uuid}#0</CurrentURI><CurrentURIMetaData></CurrentURIMetaData>`);
+}
+
 app.post('/api/sonos/cast', sessionMiddleware, async (req, res) => {
   let { ip, streamUrl, title, artist } = req.body;
   if (!ip) return res.status(400).json({ error: 'Missing or invalid ip' });
@@ -1263,6 +1291,10 @@ app.post('/api/sonos/queue', sessionMiddleware, async (req, res) => {
     await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'Stop', '<InstanceID>0</InstanceID>');
     await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'RemoveAllTracksFromQueue', '<InstanceID>0</InstanceID>');
     const { firstTrack } = await enqueueSonosTracks(ip, tracks, 0);
+    // Switch the source to the queue we just pushed, otherwise Play resumes
+    // the last-used source (e.g. TuneIn). On failure: 500 → client degrades
+    // to single-track /cast, which sets its own source URI.
+    await setQueueSource(ip);
     if (playMode) {
       const valid = ['NORMAL', 'REPEAT_ALL', 'REPEAT_ONE', 'SHUFFLE', 'SHUFFLE_NOREPEAT'];
       const mode = valid.includes(playMode) ? playMode : 'NORMAL';
@@ -1302,6 +1334,9 @@ app.post('/api/sonos/enqueue', sessionMiddleware, async (req, res) => {
     const transportXml = await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'GetTransportInfo', '<InstanceID>0</InstanceID>');
     if (extractTag(transportXml, 'CurrentTransportState') === 'STOPPED') {
       try {
+        // Queue isn't the active source yet (or the speaker stopped on a
+        // different source) — select the queue before starting playback
+        await setQueueSource(ip);
         await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'Seek',
           `<InstanceID>0</InstanceID><Unit>TRACK_NR</Unit><Target>${firstTrack > 0 ? firstTrack : 1}</Target>`);
       } catch { /* fall through to plain Play */ }
