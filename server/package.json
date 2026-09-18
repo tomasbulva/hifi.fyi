@@ -1,7 +1,7 @@
 {
   "name": "hifi-server",
   "version": "1.0.0",
-  "description": "hifi \u2014 unified server: static frontend, Navidrome proxy, companion, Sonos",
+  "description": "hifi — unified server: static frontend, Navidrome proxy, companion, Sonos",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@sentry/node": "^10.73.0",
+    "@svrooij/sonos": "^2.5.0",
     "better-sqlite3": "^11.7.0",
     "cookie-parser": "^1.4.7",
     "dotenv": "^16.4.0",

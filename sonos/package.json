@@ -10,6 +10,7 @@
     "build": "docker build -t hifi-sonos-proxy ."
   },
   "dependencies": {
+    "@svrooij/sonos": "^2.5.0",
     "cors": "^2.8.5",
     "express": "^5.1.0"
   }

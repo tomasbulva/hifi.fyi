@@ -2,12 +2,17 @@
 
 Bridges the hifi web player to Sonos speakers on the local network.
 
-Browsers can't do UDP multicast (SSDP) or SOAP/UPnP directly. This proxy handles:
+Since the 2026-09 rewrite, all Sonos communication is delegated to the
+[`@svrooij/sonos`](https://github.com/svrooij/node-sonos-ts) library
+(SSDP discovery, zone group topology, SOAP/UPnP control, queue handling).
+This proxy is a thin REST adapter keeping the same API the player expects.
+Browsers can't do UDP multicast (SSDP) or SOAP/UPnP directly, so the proxy
+handles the bridge:
 
 - **SSDP discovery** — finds Sonos devices on the LAN
 - **Zone Group Topology** — resolves devices into rooms/groups
 - **SOAP/UPnP control** — play, pause, stop, seek, volume
-- **Stream handoff** — sends the Navidrome stream URL to Sonos via `SetAVTransportURI`; Sonos streams directly from Navidrome (browser is no longer in the audio path)
+- **Stream handoff** — sends the Navidrome stream URL to Sonos; Sonos streams directly from Navidrome (browser is no longer in the audio path)
 
 ## Requirements
 
@@ -40,6 +45,7 @@ docker run -d --name hifi-sonos-proxy --network host hifi-sonos-proxy
 | `NAVIDROME_LAN_URL` | _(empty)_ | LAN URL for Navidrome, used to rewrite stream URLs so Sonos can reach them. Example: `http://192.168.68.10:4533` |
 | `PROXY_API_KEY` | _(empty)_ | Shared secret for API authentication. Player must be configured with the same key in settings |
 | `CORS_ORIGIN` | `*` | Restrict CORS to a specific origin for security |
+| `SONOS_DISCOVERY_HOST` | _(empty)_ | Static IP of one speaker — skips SSDP entirely. Useful where multicast is unreliable (some Docker/bridge setups) |
 
 ## REST API
 
@@ -48,12 +54,16 @@ docker run -d --name hifi-sonos-proxy --network host hifi-sonos-proxy
 | GET | `/health` | — | No | Health check |
 | GET | `/discover` | — | No | List Sonos speaker groups |
 | GET | `/status` | `?ip=<ip>` | No | Current playback state |
-| POST | `/cast` | `{ ip, streamUrl, title, artist }` | API Key | Start streaming |
+| POST | `/cast` | `{ ip, streamUrl, title, artist }` | API Key | Start streaming (single track) |
+| POST | `/queue` | `{ ip, tracks[], startIndex, playMode }` | API Key | Replace Sonos queue with client queue (receiver-owned playback) |
+| POST | `/enqueue` | `{ ip, streamUrl, title, artist }` | API Key | Append one track to the Sonos queue |
 | POST | `/pause` | `{ ip }` | API Key | Pause playback |
 | POST | `/resume` | `{ ip }` | API Key | Resume playback |
 | POST | `/stop` | `{ ip }` | API Key | Stop playback |
 | POST | `/seek` | `{ ip, positionSec }` | API Key | Seek to position |
 | POST | `/volume` | `{ ip, volume }` | API Key | Set volume (0–100) |
+| POST | `/next` | `{ ip }` | API Key | Skip to next track |
+| POST | `/prev` | `{ ip }` | API Key | Previous track |
 
 ## Security
 
@@ -61,3 +71,9 @@ docker run -d --name hifi-sonos-proxy --network host hifi-sonos-proxy
 - Set `CORS_ORIGIN` to the player's origin to prevent cross-origin access
 - The `/discover`, `/status`, and `/health` endpoints remain public (no auth)
 - Container runs as `node` user (not root)
+
+## Note on the unified server
+
+The same Sonos endpoints also exist in `server/src/server.ts` (`/api/sonos/*`,
+session-authenticated) for same-origin deployments. Keep both files
+behaviorally identical when changing either.

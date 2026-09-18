@@ -28,8 +28,6 @@ import { createProxyMiddleware } from 'http-proxy-middleware';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import dgram from 'dgram';
-import http from 'http';
 import crypto from 'crypto';
 import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
@@ -859,265 +857,68 @@ app.get('/api/artist-image/:artistId', sessionMiddleware, async (req, res) => {
 });
 
 // ── Sonos endpoints (/api/sonos/*) ──
+// Library-based implementation (@svrooij/sonos) — mirrors the standalone
+// sonos/server.js proxy (runs on the home LAN). Keep both behaviorally
+// identical: same routes, same request/response shapes. This same-origin
+// variant authenticates via sessionMiddleware and reports to Sentry.
 
-const SONOS_SSDP_ADDR = '239.255.255.250';
-const SONOS_SSDP_PORT = 1900;
-const SONOS_PORT = 1400;
+import { SonosManager, SonosDevice, MetaDataHelper } from '@svrooij/sonos';
 
-function discoverSonosDevices(timeoutMs = 3000): Promise<any[]> {
-  return new Promise((resolve) => {
-    const devices = new Map<string, any>();
-    const socket = dgram.createSocket('udp4');
+type SonosPlayMode = Parameters<import('@svrooij/sonos').SonosDevice['AVTransportService']['SetPlayMode']>[0]['NewPlayMode'];
 
-    const searchMessage = [
-      'M-SEARCH * HTTP/1.1',
-      `HOST: ${SONOS_SSDP_ADDR}:${SONOS_SSDP_PORT}`,
-      'MAN: "ssdp:discover"',
-      'MX: 1',
-      'ST: urn:schemas-upnp-org:device:ZonePlayer:1',
-      '', '',
-    ].join('\r\n');
+const SONOS_DISCOVERY_HOST = process.env.SONOS_DISCOVERY_HOST || '';
+const SONOS_VALID_PLAY_MODES = ['NORMAL', 'REPEAT_ALL', 'REPEAT_ONE', 'SHUFFLE', 'SHUFFLE_NOREPEAT'];
 
-    const timer = setTimeout(() => {
-      socket.close();
-      resolve([...devices.values()]);
-    }, timeoutMs);
+const sonosManager = new SonosManager();
+let sonosManagerReady = false;
+let sonosManagerInit: Promise<SonosManager> | null = null;
 
-    socket.on('message', (msg, rinfo) => {
-      const text = msg.toString();
-      const locationMatch = text.match(/LOCATION:\s*(http:\/\/[^\s]+)/i);
-      if (!locationMatch) return;
-
-      const location = locationMatch[1];
-      const ip = rinfo.address;
-      if (devices.has(ip)) return;
-
-      http.get(location, (res) => {
-        let data = '';
-        res.on('data', (chunk) => (data += chunk));
-        res.on('end', () => {
-          const nameMatch = data.match(/<friendlyName>([^<]+)<\/friendlyName>/i);
-          const modelMatch = data.match(/<modelName>([^<]+)<\/modelName>/i);
-          const roomMatch = data.match(/<roomName>([^<]+)<\/roomName>/i);
-          const udnMatch = data.match(/<UDN>([^<]+)<\/UDN>/i);
-
-          devices.set(ip, {
-            ip,
-            udn: udnMatch?.[1] || '',
-            roomName: roomMatch?.[1] || nameMatch?.[1] || `Sonos @ ${ip}`,
-            name: nameMatch?.[1] || roomMatch?.[1] || `Sonos @ ${ip}`,
-            model: modelMatch?.[1] || 'Sonos',
-          });
-        });
-      }).on('error', () => {
-        devices.set(ip, { ip, udn: '', roomName: `Sonos @ ${ip}`, name: `Sonos @ ${ip}`, model: 'Sonos' });
-      });
-    });
-
-    socket.on('error', () => {
-      socket.close();
-      clearTimeout(timer);
-      resolve([...devices.values()]);
-    });
-
-    socket.bind(() => {
-      socket.setBroadcast(true);
-      const buf = Buffer.from(searchMessage);
-      socket.send(buf, 0, buf.length, SONOS_SSDP_PORT, SONOS_SSDP_ADDR);
-    });
-  });
-}
-
-function soapCall(ip: string, endpoint: string, serviceType: string, action: string, params = ''): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const body = `<?xml version="1.0" encoding="utf-8"?>
-<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
-<s:Body>
-<u:${action} xmlns:u="${serviceType}">
-${params}
-</u:${action}>
-</s:Body>
-</s:Envelope>`;
-
-    const req = http.request({
-      hostname: ip,
-      port: SONOS_PORT,
-      path: endpoint,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'text/xml; charset="utf-8"',
-        'SOAPAction': `"${serviceType}#${action}"`,
-        'Content-Length': Buffer.byteLength(body),
-      },
-    }, (res) => {
-      let data = '';
-      res.on('data', (chunk) => (data += chunk));
-      res.on('end', () => {
-        if (res.statusCode === 200) resolve(data);
-        else {
-          // Surface the UPnP fault detail — Sonos puts the real reason in faultstring
-          const fault = (data.match(/<faultstring>([\s\S]*?)<\/faultstring>/i)?.[1] || '').slice(0, 200);
-          reject(new Error(`SOAP ${action} failed: HTTP ${res.statusCode}${fault ? ` — ${fault}` : ''}`));
-        }
-      });
-    });
-
-    req.on('error', reject);
-    req.setTimeout(5000, () => req.destroy(new Error('SOAP request timeout')));
-    req.write(body);
-    req.end();
-  });
-}
-
-function extractTag(xml: string, tag: string): string {
-  const match = xml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`, 'i'));
-  return match?.[1] ?? '';
-}
-
-function escapeXml(str: string): string {
-  return String(str)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
-}
-
-function formatTimecode(sec: number): string {
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = Math.floor(sec % 60);
-  return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-}
-
-async function getZoneGroupState(ip: string): Promise<string | null> {
-  const xml = await soapCall(ip, '/ZoneGroupTopology/Control', 'urn:schemas-upnp-org:service:ZoneGroupTopology:1', 'GetZoneGroupState', '<InstanceID>0</InstanceID>');
-  const stateMatch = xml.match(/<ZoneGroupState>([^<]*)<\/ZoneGroupState>/i);
-  if (!stateMatch) return null;
-  let decoded = decodeURIComponent(stateMatch[1]);
-  decoded = decoded.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
-  return decoded;
-}
-
-function parseZoneGroups(zoneGroupXml: string, devices: any[]): any[] {
-  const groups: any[] = [];
-  const groupRegex = /<ZoneGroup\b([^>]*)>([\s\S]*?)<\/ZoneGroup>/gs;
-  let groupMatch;
-
-  while ((groupMatch = groupRegex.exec(zoneGroupXml)) !== null) {
-    const groupAttrs = groupMatch[1];
-    const memberXml = groupMatch[2];
-    const coordinatorUuid = groupAttrs.match(/Coordinator="([^"]+)"/)?.[1] || '';
-    const members: any[] = [];
-
-    const memberRegex = /<ZoneGroupMember\b([^>]*?)>([\s\S]*?)<\/ZoneGroupMember>/g;
-    let memberMatch;
-    while ((memberMatch = memberRegex.exec(memberXml)) !== null) {
-      const attrs = memberMatch[1];
-      const uuid = attrs.match(/UUID="([^"]+)"/)?.[1] || '';
-      const zoneName = attrs.match(/ZoneName="([^"]+)"/)?.[1] || '';
-      if (uuid) members.push({ uuid, roomName: zoneName, zoneName, isCoordinator: uuid === coordinatorUuid, channel: '' });
-
-      const satRegex = /<Satellite\b([^>]*?)[\s\/]*>/g;
-      let satMatch;
-      while ((satMatch = satRegex.exec(memberMatch[2])) !== null) {
-        const satUuid = satMatch[1].match(/UUID="([^"]+)"/)?.[1] || '';
-        const satZoneName = satMatch[1].match(/ZoneName="([^"]+)"/)?.[1] || '';
-        if (satUuid) members.push({ uuid: satUuid, roomName: satZoneName, zoneName: satZoneName, isCoordinator: false, channel: '', invisible: true });
-      }
+async function ensureSonosManager(): Promise<SonosManager> {
+  if (sonosManagerReady) return sonosManager;
+  if (sonosManagerInit) return sonosManagerInit;
+  sonosManagerInit = (async () => {
+    if (SONOS_DISCOVERY_HOST) {
+      console.log(`[sonos] initializing from static host ${SONOS_DISCOVERY_HOST}`);
+      await sonosManager.InitializeFromDevice(SONOS_DISCOVERY_HOST);
+    } else {
+      console.log('[sonos] initializing via SSDP discovery (10s)');
+      await sonosManager.InitializeWithDiscovery(10);
     }
-
-    const selfClosingRegex = /<ZoneGroupMember\b([^>]*?)\/>/g;
-    let scMatch;
-    while ((scMatch = selfClosingRegex.exec(memberXml)) !== null) {
-      const attrs = scMatch[1];
-      const uuid = attrs.match(/UUID="([^"]+)"/)?.[1] || '';
-      const zoneName = attrs.match(/ZoneName="([^"]+)"/)?.[1] || '';
-      if (members.some(m => m.uuid === uuid)) continue;
-      if (uuid) members.push({ uuid, roomName: zoneName, zoneName, isCoordinator: uuid === coordinatorUuid, channel: '' });
-    }
-
-    if (members.length === 0) continue;
-
-    const coordinatorDevice = devices.find(d => {
-      const cleanUdn = d.udn?.replace(/^uuid:/, '') || '';
-      return cleanUdn === coordinatorUuid || d.udn === coordinatorUuid;
-    });
-    const coordinatorMember = members.find(m => m.uuid === coordinatorUuid) || members[0];
-    const groupName = coordinatorMember?.zoneName || coordinatorMember?.roomName || 'Sonos';
-
-    groups.push({
-      id: coordinatorUuid,
-      name: groupName,
-      coordinatorIp: coordinatorDevice?.ip || null,
-      members: members.map(m => ({
-        uuid: m.uuid,
-        roomName: m.roomName,
-        channel: m.channel || undefined,
-        invisible: m.invisible || false,
-      })),
-    });
+    sonosManagerReady = true;
+    console.log(`[sonos] manager ready, ${sonosManager.Devices.length} device(s)`);
+    return sonosManager;
+  })();
+  try {
+    await sonosManagerInit;
+  } finally {
+    sonosManagerInit = null;
   }
-
-  return groups;
+  return sonosManager;
 }
 
-async function discoverSonosGroups(): Promise<{ groups: any[]; devices: any[] }> {
-  const devices = await discoverSonosDevices();
-  if (devices.length === 0) return { groups: [], devices };
-
-  let zoneGroupXml: string | null = null;
-  for (const device of devices) {
-    try {
-      zoneGroupXml = await getZoneGroupState(device.ip);
-      if (zoneGroupXml) break;
-    } catch { /* try next */ }
+// Resolve a device by IP. Falls back to a standalone SonosDevice so commands
+// to known-but-undiscovered IPs still work (matches old permissive behavior).
+async function getSonosDevice(ip: string): Promise<SonosDevice> {
+  await ensureSonosManager();
+  let device = sonosManager.Devices.find(d => d.Host === ip);
+  if (!device) {
+    console.warn(`[sonos] ip=${ip} not in manager devices — using standalone device`);
+    device = new SonosDevice(ip);
+    try { await device.LoadDeviceData(); } catch { /* commands will surface the error */ }
   }
-
-  if (!zoneGroupXml) {
-    return {
-      groups: devices.map(d => ({
-        id: d.udn || d.ip,
-        name: d.roomName || d.name,
-        coordinatorIp: d.ip,
-        members: [{ uuid: d.udn, roomName: d.roomName }],
-      })),
-      devices,
-    };
-  }
-
-  const groups = parseZoneGroups(zoneGroupXml, devices);
-  return { groups, devices };
+  return device;
 }
 
-app.get('/api/sonos/discover', async (req, res) => {
+// AVTransport commands must go to the group coordinator.
+function sonosCoordinator(device: SonosDevice): SonosDevice {
   try {
-    const { groups } = await discoverSonosGroups();
-    res.json({ speakers: groups });
-  } catch (err: any) {
-    Sentry.captureException(err); res.status(500).json({ error: err.message });
-  }
-});
+    const coord = device.Coordinator;
+    if (coord && coord.Uuid) return coord;
+  } catch { /* standalone device */ }
+  return device;
+}
 
-app.get('/api/sonos/status', async (req, res) => {
-  const ip = req.query.ip as string;
-  if (!ip) return res.status(400).json({ error: 'Missing or invalid ip' });
-  try {
-    const transportXml = await soapCall(ip, '/MediaRenderer/AVTransport/Control', 'urn:schemas-upnp-org:service:AVTransport:1', 'GetTransportInfo', '<InstanceID>0</InstanceID>');
-    const posXml = await soapCall(ip, '/MediaRenderer/AVTransport/Control', 'urn:schemas-upnp-org:service:AVTransport:1', 'GetPositionInfo', '<InstanceID>0</InstanceID>');
-    res.json({
-      ip,
-      state: extractTag(transportXml, 'CurrentTransportState'),
-      status: extractTag(transportXml, 'CurrentTransportStatus'),
-      trackURI: extractTag(posXml, 'TrackURI'),
-      position: extractTag(posXml, 'RelTime'),
-      duration: extractTag(posXml, 'TrackDuration'),
-      isPlaying: extractTag(transportXml, 'CurrentTransportState') === 'PLAYING',
-    });
-  } catch (err: any) {
-    Sentry.captureException(err); res.status(500).json({ error: err.message });
-  }
-});
-
-// Rewrite a stream URL so Sonos can reach it from the speakers' LAN
-function rewriteStreamUrl(streamUrl: string): string {
+function sonosRewriteStreamUrl(streamUrl: string): string {
   if (!NAVIDROME_LAN_URL) return streamUrl;
   try {
     const parsed = new URL(streamUrl);
@@ -1128,59 +929,147 @@ function rewriteStreamUrl(streamUrl: string): string {
   } catch { return streamUrl; }
 }
 
-function buildDidl(streamUrl: string, title?: string, artist?: string, itemId = 1): string {
-  return `<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"><item id="${itemId}" parentID="0" restricted="true"><res protocolInfo="http-get:*:audio/mpeg:*">${escapeXml(streamUrl)}</res><dc:title>${escapeXml(title || 'Unknown')}</dc:title><dc:creator>${escapeXml(artist || '')}</dc:creator><upnp:class>object.item.audioItem.musicTrack</upnp:class></item></DIDL-Lite>`;
+function sonosFormatTimecode(sec: number): string {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-const SONOS_AVTRANSPORT = 'urn:schemas-upnp-org:service:AVTransport:1';
-const SONOS_AVTRANSPORT_CTRL = '/MediaRenderer/AVTransport/Control';
+// XML-escape for values passed as raw strings (library passes string
+// MetaData/URIs through untouched).
+function sonosXmlEscape(str: string): string {
+  return String(str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+}
 
-// Zone UUID (RINCON_xxx) per IP — needed to build the x-rincon-queue: URI.
-// Cached; Sonos UUIDs are stable across reboots.
-const zoneUuidCache = new Map<string, string>();
-function getZoneUuid(ip: string): Promise<string> {
-  const cached = zoneUuidCache.get(ip);
-  if (cached) return Promise.resolve(cached);
-  return new Promise((resolve, reject) => {
-    http.get(`http://${ip}:${SONOS_PORT}/xml/device_description.xml`, (res) => {
-      let data = '';
-      res.on('data', (chunk) => (data += chunk));
-      res.on('end', () => {
-        const m = data.match(/<UDN>\s*uuid:(RINCON_[0-9A-Za-z]+)/i);
-        if (m) { zoneUuidCache.set(ip, m[1]); resolve(m[1]); }
-        else reject(new Error('Could not resolve zone UUID from device description'));
+interface SonosQueueTrack {
+  streamUrl: string;
+  title?: string;
+  artist?: string;
+}
+
+function sonosBuildTrack(streamUrl: string, title?: string, artist?: string) {
+  return {
+    TrackUri: streamUrl,
+    Title: title || 'Unknown',
+    Artist: artist || '',
+    UpnpClass: 'object.item.audioItem.musicTrack',
+    ProtocolInfo: 'http-get:*:audio/mpeg:*',
+  };
+}
+
+// Add tracks to the Sonos queue; returns the 1-based number of the first
+// track enqueued. Fast path: AddMultipleURIsToQueue in one call; fallback:
+// sequential AddURIToQueue with typed Track metadata (library-encoded).
+async function sonosEnqueueTracks(av: SonosDevice['AVTransportService'], tracks: SonosQueueTrack[]): Promise<number> {
+  if (tracks.length === 0) return 0;
+  const urls = tracks.map(t => sonosRewriteStreamUrl(t.streamUrl));
+  try {
+    // Raw-string fast path: Sonos expects CSVs of URIs and DIDL XML.
+    const didls = tracks.map((t, i) => MetaDataHelper.TrackToMetaData(sonosBuildTrack(urls[i], t.title, t.artist), true) || '');
+    const resp = await av.AddMultipleURIsToQueue({
+      InstanceID: 0,
+      UpdateID: 0,
+      NumberOfURIs: tracks.length,
+      EnqueuedURIs: sonosXmlEscape(urls.join(',')),
+      EnqueuedURIsMetaData: sonosXmlEscape(didls.join(',')),
+      ContainerURI: '',
+      ContainerMetaData: '',
+      DesiredFirstTrackNumberEnqueued: 0,
+      EnqueueAsNext: false,
+    });
+    return resp.FirstTrackNumberEnqueued || 1;
+  } catch (err) {
+    console.warn(`[sonos] AddMultipleURIsToQueue failed (${err instanceof Error ? err.message : err}) — falling back to per-track add`);
+    let first = 0;
+    for (let i = 0; i < tracks.length; i++) {
+      const resp = await av.AddURIToQueue({
+        InstanceID: 0,
+        EnqueuedURI: urls[i],
+        EnqueuedURIMetaData: sonosBuildTrack(urls[i], tracks[i].title, tracks[i].artist),
+        DesiredFirstTrackNumberEnqueued: 0,
+        EnqueueAsNext: false,
       });
-    }).on('error', reject);
-  });
+      if (i === 0) first = resp.FirstTrackNumberEnqueued || 1;
+    }
+    return first;
+  }
 }
 
 // Make the Sonos queue the active playback source. Filling the queue alone
 // does NOT switch sources — without this, Play resumes whatever source was
 // last selected on the speaker (e.g. TuneIn radio).
-async function setQueueSource(ip: string): Promise<void> {
-  const uuid = await getZoneUuid(ip);
-  await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'SetAVTransportURI',
-    `<InstanceID>0</InstanceID><CurrentURI>x-rincon-queue:RINCON_${uuid}#0</CurrentURI><CurrentURIMetaData></CurrentURIMetaData>`);
+async function sonosSetQueueSource(av: SonosDevice['AVTransportService'], coordinator: SonosDevice): Promise<void> {
+  await av.SetAVTransportURI({
+    InstanceID: 0,
+    CurrentURI: `x-rincon-queue:${coordinator.Uuid}#0`,
+    CurrentURIMetaData: '',
+  });
 }
 
+app.get('/api/sonos/discover', async (req, res) => {
+  try {
+    await ensureSonosManager();
+    const groups = new Map<string, { coordinator: SonosDevice; members: { uuid: string; roomName: string; channel?: string }[] }>();
+    for (const d of sonosManager.Devices) {
+      const groupName = d.GroupName || d.Name || d.Host;
+      if (!groups.has(groupName)) groups.set(groupName, { coordinator: sonosCoordinator(d), members: [] });
+      groups.get(groupName)!.members.push({ uuid: d.Uuid, roomName: d.Name });
+    }
+    const speakers = [...groups.values()].map(g => ({
+      id: g.coordinator.Uuid,
+      name: g.coordinator.Name,
+      coordinatorIp: g.coordinator.Host,
+      members: g.members,
+    }));
+    res.json({ speakers });
+  } catch (err) {
+    // No speakers found is not a server error — mirror empty-result behavior
+    console.warn(`[sonos/discover] ${err instanceof Error ? err.message : err}`);
+    res.json({ speakers: [] });
+  }
+});
+
+app.get('/api/sonos/status', async (req, res) => {
+  const ip = req.query.ip as string;
+  if (!ip) return res.status(400).json({ error: 'Missing or invalid ip' });
+  try {
+    const device = await getSonosDevice(ip);
+    const av = sonosCoordinator(device).AVTransportService;
+    const transport = await av.GetTransportInfo({ InstanceID: 0 });
+    const position = await av.GetPositionInfo({ InstanceID: 0 });
+    res.json({
+      ip,
+      state: transport.CurrentTransportState,
+      status: transport.CurrentTransportStatus,
+      trackURI: position.TrackURI,
+      position: position.RelTime,
+      duration: position.TrackDuration,
+      isPlaying: transport.CurrentTransportState === 'PLAYING',
+    });
+  } catch (err: any) {
+    Sentry.captureException(err); res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/sonos/cast', sessionMiddleware, async (req, res) => {
-  let { ip, streamUrl, title, artist } = req.body;
+  const { ip, streamUrl, title, artist } = req.body;
   if (!ip) return res.status(400).json({ error: 'Missing or invalid ip' });
   if (!streamUrl) return res.status(400).json({ error: 'Missing streamUrl' });
-
-  streamUrl = rewriteStreamUrl(streamUrl);
-
   try {
-    const didlLite = buildDidl(streamUrl, title, artist);
-
-    const serviceType = SONOS_AVTRANSPORT;
-    const endpoint = SONOS_AVTRANSPORT_CTRL;
-
-    await soapCall(ip, endpoint, serviceType, 'SetAVTransportURI',
-      `<InstanceID>0</InstanceID><CurrentURI>${escapeXml(streamUrl)}</CurrentURI><CurrentURIMetaData>${escapeXml(didlLite)}</CurrentURIMetaData>`);
-    await soapCall(ip, endpoint, serviceType, 'Play', '<InstanceID>0</InstanceID><Speed>1</Speed>');
-
-    res.json({ ok: true, message: `Casting to ${ip}` });
+    const device = await getSonosDevice(ip);
+    const coordinator = sonosCoordinator(device);
+    const av = coordinator.AVTransportService;
+    const url = sonosRewriteStreamUrl(streamUrl);
+    await av.SetAVTransportURI({
+      InstanceID: 0,
+      CurrentURI: url,
+      CurrentURIMetaData: sonosBuildTrack(url, title, artist),
+    });
+    await av.Play({ InstanceID: 0, Speed: '1' });
+    res.json({ ok: true, message: `Casting to ${coordinator.Host}` });
   } catch (err: any) {
     Sentry.captureException(err); res.status(500).json({ error: err.message });
   }
@@ -1190,7 +1079,8 @@ app.post('/api/sonos/pause', sessionMiddleware, async (req, res) => {
   const { ip } = req.body;
   if (!ip) return res.status(400).json({ error: 'Missing or invalid ip' });
   try {
-    await soapCall(ip, '/MediaRenderer/AVTransport/Control', 'urn:schemas-upnp-org:service:AVTransport:1', 'Pause', '<InstanceID>0</InstanceID>');
+    const device = await getSonosDevice(ip);
+    await sonosCoordinator(device).AVTransportService.Pause({ InstanceID: 0 });
     res.json({ ok: true });
   } catch (err: any) { Sentry.captureException(err); res.status(500).json({ error: err.message }); }
 });
@@ -1199,7 +1089,8 @@ app.post('/api/sonos/resume', sessionMiddleware, async (req, res) => {
   const { ip } = req.body;
   if (!ip) return res.status(400).json({ error: 'Missing or invalid ip' });
   try {
-    await soapCall(ip, '/MediaRenderer/AVTransport/Control', 'urn:schemas-upnp-org:service:AVTransport:1', 'Play', '<InstanceID>0</InstanceID><Speed>1</Speed>');
+    const device = await getSonosDevice(ip);
+    await sonosCoordinator(device).AVTransportService.Play({ InstanceID: 0, Speed: '1' });
     res.json({ ok: true });
   } catch (err: any) { Sentry.captureException(err); res.status(500).json({ error: err.message }); }
 });
@@ -1208,7 +1099,8 @@ app.post('/api/sonos/stop', sessionMiddleware, async (req, res) => {
   const { ip } = req.body;
   if (!ip) return res.status(400).json({ error: 'Missing or invalid ip' });
   try {
-    await soapCall(ip, '/MediaRenderer/AVTransport/Control', 'urn:schemas-upnp-org:service:AVTransport:1', 'Stop', '<InstanceID>0</InstanceID>');
+    const device = await getSonosDevice(ip);
+    await sonosCoordinator(device).AVTransportService.Stop({ InstanceID: 0 });
     res.json({ ok: true });
   } catch (err: any) { Sentry.captureException(err); res.status(500).json({ error: err.message }); }
 });
@@ -1218,8 +1110,10 @@ app.post('/api/sonos/seek', sessionMiddleware, async (req, res) => {
   if (!ip) return res.status(400).json({ error: 'Missing or invalid ip' });
   if (positionSec === undefined) return res.status(400).json({ error: 'Missing positionSec' });
   try {
-    await soapCall(ip, '/MediaRenderer/AVTransport/Control', 'urn:schemas-upnp-org:service:AVTransport:1', 'Seek',
-      `<InstanceID>0</InstanceID><Unit>REL_TIME</Unit><Target>${formatTimecode(positionSec)}</Target>`);
+    const device = await getSonosDevice(ip);
+    await sonosCoordinator(device).AVTransportService.Seek({
+      InstanceID: 0, Unit: 'REL_TIME', Target: sonosFormatTimecode(positionSec),
+    });
     res.json({ ok: true });
   } catch (err: any) { Sentry.captureException(err); res.status(500).json({ error: err.message }); }
 });
@@ -1229,54 +1123,13 @@ app.post('/api/sonos/volume', sessionMiddleware, async (req, res) => {
   if (!ip) return res.status(400).json({ error: 'Missing or invalid ip' });
   if (volume === undefined || volume < 0 || volume > 100) return res.status(400).json({ error: 'Invalid volume (0-100)' });
   try {
-    await soapCall(ip, '/MediaRenderer/RenderingControl/Control', 'urn:schemas-upnp-org:service:RenderingControl:1', 'SetVolume',
-      `<InstanceID>0</InstanceID><Channel>Master</Channel><DesiredVolume>${Math.round(volume)}</DesiredVolume>`);
+    const device = await getSonosDevice(ip);
+    await sonosCoordinator(device).RenderingControlService.SetVolume({
+      InstanceID: 0, Channel: 'Master', DesiredVolume: Math.round(volume),
+    });
     res.json({ ok: true });
   } catch (err: any) { Sentry.captureException(err); res.status(500).json({ error: err.message }); }
 });
-
-// ── Sonos native queue (receiver-owned playback) ──
-// Push the whole queue to Sonos once; Sonos advances tracks itself, so the
-// browser client only syncs UI state and never needs to be alive to advance.
-
-interface SonosQueueTrack {
-  streamUrl: string;
-  title?: string;
-  artist?: string;
-}
-
-async function enqueueSonosTracks(ip: string, tracks: SonosQueueTrack[], firstTrackNumber: number): Promise<{ firstTrack: number }> {
-  if (tracks.length === 0) return { firstTrack: 0 };
-  const urls = tracks.map(t => rewriteStreamUrl(t.streamUrl));
-  const didls = tracks.map((t, i) => buildDidl(rewriteStreamUrl(t.streamUrl), t.title, t.artist, i + 1));
-
-  // Fast path: one SOAP call for the whole batch
-  try {
-    const xml = await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'AddMultipleURIsToQueue',
-      `<InstanceID>0</InstanceID><UpdateID>0</UpdateID><NumberOfURIs>${tracks.length}</NumberOfURIs>` +
-      `<EnqueuedURIs>${escapeXml(urls.join(','))}</EnqueuedURIs>` +
-      `<EnqueuedURIsMetaData>${escapeXml(didls.join(','))}</EnqueuedURIsMetaData>` +
-      `<ContainerURI></ContainerURI><ContainerMetaData></ContainerMetaData>` +
-      `<DesiredFirstTrackNumberEnqueued>${firstTrackNumber}</DesiredFirstTrackNumberEnqueued><EnqueueAsNext>0</EnqueueAsNext>`);
-    const first = extractTag(xml, 'FirstTrackNumberEnqueued');
-    return { firstTrack: first ? parseInt(first, 10) : 1 };
-  } catch {
-    // Fallback: add tracks one by one (append). Not a tight loop — Sonos is
-    // slow per call; this is bounded by the user's queue length.
-    let first = 0;
-    for (let i = 0; i < tracks.length; i++) {
-      const resp = await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'AddURIToQueue',
-        `<InstanceID>0</InstanceID><EnqueuedURI>${escapeXml(urls[i])}</EnqueuedURI>` +
-        `<EnqueuedURIMetaData>${escapeXml(didls[i])}</EnqueuedURIMetaData>` +
-        `<DesiredFirstTrackNumberEnqueued>0</DesiredFirstTrackNumberEnqueued><EnqueueAsNext>0</EnqueueAsNext>`);
-      if (i === 0) {
-        const tag = extractTag(resp, 'FirstTrackNumberEnqueued');
-        firstTrackNumber = tag ? parseInt(tag, 10) : 1;
-      }
-    }
-    return { firstTrack: firstTrackNumber };
-  }
-}
 
 // Replace Sonos queue with the client's queue and start at startIndex.
 app.post('/api/sonos/queue', sessionMiddleware, async (req, res) => {
@@ -1284,39 +1137,38 @@ app.post('/api/sonos/queue', sessionMiddleware, async (req, res) => {
     ip?: string; tracks?: SonosQueueTrack[]; startIndex?: number; playMode?: string;
   };
   if (!ip) return res.status(400).json({ error: 'Missing or invalid ip' });
-  if (!Array.isArray(tracks) || tracks.length === 0) return res.status(400).json({ error: 'Missing tracks' });
-  if (tracks.length > 500) return res.status(400).json({ error: 'Too many tracks (max 500)' });
+  if (!Array.isArray(tracks) || tracks.length === 0 || tracks.length > 500) {
+    return res.status(400).json({ error: 'Missing or invalid tracks (max 500)' });
+  }
   const start = Math.max(0, Math.min(startIndex ?? 0, tracks.length - 1));
   try {
-    await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'Stop', '<InstanceID>0</InstanceID>');
-    await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'RemoveAllTracksFromQueue', '<InstanceID>0</InstanceID>');
-    const { firstTrack } = await enqueueSonosTracks(ip, tracks, 0);
+    const device = await getSonosDevice(ip);
+    const coordinator = sonosCoordinator(device);
+    const av = coordinator.AVTransportService;
+
+    await av.Stop({ InstanceID: 0 });
+    await av.RemoveAllTracksFromQueue({ InstanceID: 0 });
+    const firstTrack = await sonosEnqueueTracks(av, tracks);
     // Switch the source to the queue we just pushed, otherwise Play resumes
     // the last-used source (e.g. TuneIn). On failure: 500 → client degrades
     // to single-track /cast, which sets its own source URI.
-    await setQueueSource(ip);
-    if (playMode) {
-      const valid = ['NORMAL', 'REPEAT_ALL', 'REPEAT_ONE', 'SHUFFLE', 'SHUFFLE_NOREPEAT'];
-      const mode = valid.includes(playMode) ? playMode : 'NORMAL';
-      await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'SetPlayMode',
-        `<InstanceID>0</InstanceID><NewPlayMode>${mode}</NewPlayMode>`);
+    await sonosSetQueueSource(av, coordinator);
+    if (playMode && SONOS_VALID_PLAY_MODES.includes(playMode)) {
+      await av.SetPlayMode({ InstanceID: 0, NewPlayMode: playMode as SonosPlayMode });
     }
     // Jump to the requested start track. Sonos TRACK_NR is 1-based; some
-    // firmwares return FirstTrackNumberEnqueued=0 when appending to an empty
-    // queue, so fall back to the list position when the reported number is 0.
-    const target = (firstTrack > 0 ? firstTrack + start : start + 1);
+    // firmwares report FirstTrackNumberEnqueued=0 on empty queues.
+    const target = firstTrack > 0 ? firstTrack + start : start + 1;
     try {
-      await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'Seek',
-        `<InstanceID>0</InstanceID><Unit>TRACK_NR</Unit><Target>${target}</Target>`);
+      await av.Seek({ InstanceID: 0, Unit: 'TRACK_NR', Target: String(target) });
     } catch {
       // TRACK_NR seek can fail on some firmwares/queue states — start from
       // the top rather than failing the whole cast
       if (target !== 1) {
-        await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'Seek',
-          `<InstanceID>0</InstanceID><Unit>TRACK_NR</Unit><Target>1</Target>`);
+        await av.Seek({ InstanceID: 0, Unit: 'TRACK_NR', Target: '1' });
       }
     }
-    await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'Play', '<InstanceID>0</InstanceID><Speed>1</Speed>');
+    await av.Play({ InstanceID: 0, Speed: '1' });
     res.json({ ok: true, firstTrack, start });
   } catch (err: any) {
     Sentry.captureException(err); res.status(500).json({ error: err.message });
@@ -1329,18 +1181,21 @@ app.post('/api/sonos/enqueue', sessionMiddleware, async (req, res) => {
   if (!ip) return res.status(400).json({ error: 'Missing or invalid ip' });
   if (!streamUrl) return res.status(400).json({ error: 'Missing streamUrl' });
   try {
-    const { firstTrack } = await enqueueSonosTracks(ip, [{ streamUrl, title, artist }], 0);
+    const device = await getSonosDevice(ip);
+    const coordinator = sonosCoordinator(device);
+    const av = coordinator.AVTransportService;
+
+    const firstTrack = await sonosEnqueueTracks(av, [{ streamUrl, title, artist }]);
     // If nothing is playing (queue ran out), start playback
-    const transportXml = await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'GetTransportInfo', '<InstanceID>0</InstanceID>');
-    if (extractTag(transportXml, 'CurrentTransportState') === 'STOPPED') {
+    const transport = await av.GetTransportInfo({ InstanceID: 0 });
+    if (transport.CurrentTransportState === 'STOPPED') {
       try {
         // Queue isn't the active source yet (or the speaker stopped on a
         // different source) — select the queue before starting playback
-        await setQueueSource(ip);
-        await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'Seek',
-          `<InstanceID>0</InstanceID><Unit>TRACK_NR</Unit><Target>${firstTrack > 0 ? firstTrack : 1}</Target>`);
+        await sonosSetQueueSource(av, coordinator);
+        await av.Seek({ InstanceID: 0, Unit: 'TRACK_NR', Target: String(firstTrack > 0 ? firstTrack : 1) });
       } catch { /* fall through to plain Play */ }
-      await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'Play', '<InstanceID>0</InstanceID><Speed>1</Speed>');
+      await av.Play({ InstanceID: 0, Speed: '1' });
     }
     res.json({ ok: true, firstTrack });
   } catch (err: any) {
@@ -1353,7 +1208,8 @@ app.post('/api/sonos/next', sessionMiddleware, async (req, res) => {
   const { ip } = req.body;
   if (!ip) return res.status(400).json({ error: 'Missing or invalid ip' });
   try {
-    await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'Next', '<InstanceID>0</InstanceID>');
+    const device = await getSonosDevice(ip);
+    await sonosCoordinator(device).AVTransportService.Next({ InstanceID: 0 });
     res.json({ ok: true });
   } catch (err: any) { Sentry.captureException(err); res.status(500).json({ error: err.message }); }
 });
@@ -1362,7 +1218,8 @@ app.post('/api/sonos/prev', sessionMiddleware, async (req, res) => {
   const { ip } = req.body;
   if (!ip) return res.status(400).json({ error: 'Missing or invalid ip' });
   try {
-    await soapCall(ip, SONOS_AVTRANSPORT_CTRL, SONOS_AVTRANSPORT, 'Previous', '<InstanceID>0</InstanceID>');
+    const device = await getSonosDevice(ip);
+    await sonosCoordinator(device).AVTransportService.Previous({ InstanceID: 0 });
     res.json({ ok: true });
   } catch (err: any) { Sentry.captureException(err); res.status(500).json({ error: err.message }); }
 });
