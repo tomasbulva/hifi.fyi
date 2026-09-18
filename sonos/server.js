@@ -218,7 +218,9 @@ async function setQueueSource(av, coordinator) {
 // ── Express app ──
 
 const app = express();
-app.use(express.json());
+// 2mb: /queue pushes up to 500 tracks, each with full auth params in the
+// streamUrl — exceeds the 100kb default (PayloadTooLargeError).
+app.use(express.json({ limit: '2mb' }));
 app.use(cors({ origin: ALLOWED_ORIGIN, methods: ['GET', 'POST'] }));
 
 function authMiddleware(req, res, next) {

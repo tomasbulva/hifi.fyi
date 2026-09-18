@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react';
 import { getAudioEngine, AudioEngine } from './AudioEngine';
-import { getStreamUrl, getArtists, getAlbum, getCoverArtUrl, search as searchApi, getAlbumList2, getPlaylists, getSongs, getInternetRadioStations, createPlaylist, star as starSong, unstar as unstarSong } from './api';
+import { getAbsoluteStreamUrl, getArtists, getAlbum, getCoverArtUrl, search as searchApi, getAlbumList2, getPlaylists, getSongs, getInternetRadioStations, createPlaylist, star as starSong, unstar as unstarSong } from './api';
 import { googleCastProvider, googleCastControls } from './googleCastProvider';
 import { sonosControls } from './sonosProvider';
 import { useSettings } from './SettingsContext';
@@ -294,7 +294,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     const clamped = Math.max(0, Math.min(idx, source.length - 1));
     const items: CastQueueItem[] = source.map(item => ({
       id: item.song.id,
-      streamUrl: getStreamUrl(item.song.id),
+      streamUrl: getAbsoluteStreamUrl(item.song.id),
       title: item.song.title,
       artist: item.song.artist ?? '',
     }));
@@ -476,7 +476,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
               if (song && castTargetRef.current?.type === 'sonos' && castTargetRef.current) {
                 const ip = (castTargetRef.current as any).ip;
                 sonosControls.enqueue(ip, {
-                  streamUrl: getStreamUrl(song.id),
+                  streamUrl: getAbsoluteStreamUrl(song.id),
                   title: song.title,
                   artist: song.artist ?? '',
                 }).catch(() => {});
@@ -530,7 +530,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
           if (song && castTargetRef.current?.type !== 'sonos' && castTargetRef.current) {
             googleCastControls.queueAppend([{
               id: song.id,
-              streamUrl: getStreamUrl(song.id),
+              streamUrl: getAbsoluteStreamUrl(song.id),
               title: song.title,
               artist: song.artist ?? '',
             }]);
