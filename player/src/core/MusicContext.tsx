@@ -276,6 +276,15 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   const lastCastSongIdRef = useRef<string | null>(null);
   // Guards against double appends when a cast receiver hits the queue end
   const castAppendPendingRef = useRef(false);
+  // True while the initial queue push to the receiver is in flight. The
+  // Keep-Playing poller must not fire mid-push: the receiver reports STOPPED
+  // until the push finishes, which used to race in with a recommendation and
+  // auto-play a random song.
+  const queuePushPendingRef = useRef(false);
+  // True once the receiver has actually PLAYED something this cast session.
+  // Keep-Playing appends only make sense after real playback has started —
+  // never when a cast silently failed and the receiver is simply idle.
+  const hasCastPlayedRef = useRef(false);
 
   function isCasting() {
     return castTargetRef.current !== null;
@@ -309,7 +318,10 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     if (target.type === 'sonos') {
       const ip = (target as any).ip;
       if (!ip) return;
-      sonosControls.castQueue(ip, items, clamped, playMode).catch(() => {});
+      queuePushPendingRef.current = true;
+      sonosControls.castQueue(ip, items, clamped, playMode)
+        .catch(() => {})
+        .finally(() => { queuePushPendingRef.current = false; });
     } else {
       googleCastProvider.castQueue?.(items, clamped, playMode);
     }
@@ -440,6 +452,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
         if (!status || !active) return;
         const progress = parseTime(status.position);
         const duration = parseTime(status.duration);
+        if (status.isPlaying) hasCastPlayedRef.current = true;
         setPlayback(prev => ({
           ...prev,
           isPlaying: status.isPlaying,
@@ -468,6 +481,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
           stoppedStreak += 1;
           if (
             stoppedStreak >= 3 && !castAppendPendingRef.current &&
+            !queuePushPendingRef.current && hasCastPlayedRef.current &&
             settings.autoplay && queue.length > 0
           ) {
             const lastSong = queue[queue.length - 1].song;
@@ -801,6 +815,8 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
       }
     }
     castTargetRef.current = target;
+    // New cast session — receiver hasn't played anything yet
+    hasCastPlayedRef.current = false;
     setCastTargetState(target);
     
     if (target) {

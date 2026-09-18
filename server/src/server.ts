@@ -959,6 +959,10 @@ function sonosBuildTrack(streamUrl: string, title?: string, artist?: string) {
     Artist: artist || '',
     UpnpClass: 'object.item.audioItem.musicTrack',
     ProtocolInfo: 'http-get:*:audio/mpeg:*',
+    // TrackToMetaData(includeResource=true) always emits duration="<Duration>"
+    // — undefined produced duration="undefined" → Sonos UPnPError 402 on
+    // AddMultipleURIsToQueue.
+    Duration: '0:00:00',
   };
 }
 
