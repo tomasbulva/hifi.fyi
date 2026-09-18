@@ -88,7 +88,9 @@ if (SENTRY_DSN) {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
-app.use(express.json());
+// 2mb: /api/sonos/queue pushes up to 500 tracks, each with full auth params
+// in the streamUrl — exceeds the 100kb default (PayloadTooLargeError).
+app.use(express.json({ limit: '2mb' }));
 // Behind Cloudflare Tunnel (cloudflared) — trust private-network hops so
 // req.ip is the real client IP for the ban middleware, not the tunnel's.
 app.set('trust proxy', ['loopback', 'linklocal', 'uniquelocal']);

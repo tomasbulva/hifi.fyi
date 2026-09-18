@@ -90,6 +90,14 @@ export function getStreamUrl(id: string, opts?: { maxBitRate?: number }) {
   return `/rest/stream.view?${authQueryParams()}&${p.join('&')}`;
 }
 
+/** Absolute stream URL for cast receivers (Sonos / Google Cast fetch media
+ *  directly and cannot resolve relative URLs). Same auth params; the Sonos
+ *  proxy rewrites the host to NAVIDROME_LAN_URL for LAN playback. */
+export function getAbsoluteStreamUrl(id: string, opts?: { maxBitRate?: number }) {
+  const path = getStreamUrl(id, opts);
+  try { return new URL(path, window.location.origin).href; } catch { return path; }
+}
+
 // Session-stable salt for cover art URLs — makes getCoverArtUrl deterministic
 // so client-side image caching works (same coverArt ID → same URL → cache hit).
 // Cover art is not sensitive; replay risk is negligible.
