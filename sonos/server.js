@@ -176,9 +176,13 @@ function formatTimecode(sec) {
 async function enqueueTracks(av, tracks) {
   if (tracks.length === 0) return 0;
   const urls = tracks.map(t => rewriteStreamUrl(t.streamUrl));
+  // TrackToMetaData embeds values WITHOUT XML-escaping — escape here or any
+  // '&' in URLs/titles makes the DIDL itself invalid XML (Sonos rejects
+  // with UPnPError 804).
+  const esc = (s) => (s === undefined || s === null ? s : xmlEscape(s));
   try {
     // Raw-string fast path: Sonos expects CSVs of URIs and DIDL XML.
-    const didls = tracks.map((t, i) => MetaDataHelper.TrackToMetaData(buildTrack(urls[i], t.title, t.artist), true) || '');
+    const didls = tracks.map((t, i) => MetaDataHelper.TrackToMetaData(buildTrack(xmlEscape(urls[i]), esc(t.title), esc(t.artist)), true) || '');
     const resp = await av.AddMultipleURIsToQueue({
       InstanceID: 0,
       UpdateID: 0,
@@ -197,7 +201,9 @@ async function enqueueTracks(av, tracks) {
     for (let i = 0; i < tracks.length; i++) {
       const resp = await av.AddURIToQueue({
         InstanceID: 0,
-        EnqueuedURI: urls[i],
+        // Library EncodeTrackUri() only encodeURI()s http URLs — it does NOT
+        // XML-escape, so raw '&' in query params produces invalid SOAP XML.
+        EnqueuedURI: xmlEscape(urls[i]),
         EnqueuedURIMetaData: buildTrack(urls[i], tracks[i].title, tracks[i].artist),
         DesiredFirstTrackNumberEnqueued: 0,
         EnqueueAsNext: false,
@@ -300,12 +306,14 @@ app.post('/cast', async (req, res) => {
     const url = rewriteStreamUrl(streamUrl);
     await av.SetAVTransportURI({
       InstanceID: 0,
-      CurrentURI: url,
+      // encodeURI() in the library leaves '&' raw → invalid XML
+      CurrentURI: xmlEscape(url),
       CurrentURIMetaData: buildTrack(url, title, artist),
     });
     await av.Play({ InstanceID: 0, Speed: '1' });
     res.json({ ok: true, message: `Casting to ${coordinator.Host}` });
   } catch (err) {
+    console.error(`[cast] failed: ${err.message}`);
     res.status(500).json({ error: err.message });
   }
 });
@@ -396,6 +404,7 @@ app.post('/queue', async (req, res) => {
     await av.Play({ InstanceID: 0, Speed: '1' });
     res.json({ ok: true, firstTrack, start });
   } catch (err) {
+    console.error(`[queue] failed: ${err.message}`);
     res.status(500).json({ error: err.message });
   }
 });
@@ -442,7 +451,7 @@ app.post('/prev', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🔊 hifi sonos proxy (@svrooij/sonos) on http://0.0.0.0:${PORT}`);
+  console.log(`🔊 hifi sonos proxy [esc-fix-2026-09-19] on http://0.0.0.0:${PORT}`);
   console.log(`   API key auth: ${API_KEY ? 'enabled' : 'disabled'}`);
   console.log(`   CORS origin: ${ALLOWED_ORIGIN}`);
   console.log(`   Navidrome LAN URL: ${NAVIDROME_LAN_URL || '(not set)'}`);

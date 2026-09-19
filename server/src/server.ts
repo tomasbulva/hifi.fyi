@@ -972,9 +972,12 @@ function sonosBuildTrack(streamUrl: string, title?: string, artist?: string) {
 async function sonosEnqueueTracks(av: SonosDevice['AVTransportService'], tracks: SonosQueueTrack[]): Promise<number> {
   if (tracks.length === 0) return 0;
   const urls = tracks.map(t => sonosRewriteStreamUrl(t.streamUrl));
+  // TrackToMetaData embeds values WITHOUT XML-escaping — escape here or any
+  // '&' in URLs/titles makes the DIDL itself invalid XML (UPnPError 804).
+  const esc = (s: string | undefined) => (s === undefined || s === null ? s : sonosXmlEscape(s));
   try {
     // Raw-string fast path: Sonos expects CSVs of URIs and DIDL XML.
-    const didls = tracks.map((t, i) => MetaDataHelper.TrackToMetaData(sonosBuildTrack(urls[i], t.title, t.artist), true) || '');
+    const didls = tracks.map((t, i) => MetaDataHelper.TrackToMetaData(sonosBuildTrack(sonosXmlEscape(urls[i]), esc(t.title), esc(t.artist)), true) || '');
     const resp = await av.AddMultipleURIsToQueue({
       InstanceID: 0,
       UpdateID: 0,
@@ -993,7 +996,9 @@ async function sonosEnqueueTracks(av: SonosDevice['AVTransportService'], tracks:
     for (let i = 0; i < tracks.length; i++) {
       const resp = await av.AddURIToQueue({
         InstanceID: 0,
-        EnqueuedURI: urls[i],
+        // Library EncodeTrackUri() only encodeURI()s http URLs — it does NOT
+        // XML-escape, so raw '&' in query params produces invalid SOAP XML.
+        EnqueuedURI: sonosXmlEscape(urls[i]),
         EnqueuedURIMetaData: sonosBuildTrack(urls[i], tracks[i].title, tracks[i].artist),
         DesiredFirstTrackNumberEnqueued: 0,
         EnqueueAsNext: false,
@@ -1071,12 +1076,14 @@ app.post('/api/sonos/cast', sessionMiddleware, async (req, res) => {
     const url = sonosRewriteStreamUrl(streamUrl);
     await av.SetAVTransportURI({
       InstanceID: 0,
-      CurrentURI: url,
+      // encodeURI() in the library leaves '&' raw → invalid XML
+      CurrentURI: sonosXmlEscape(url),
       CurrentURIMetaData: sonosBuildTrack(url, title, artist),
     });
     await av.Play({ InstanceID: 0, Speed: '1' });
     res.json({ ok: true, message: `Casting to ${coordinator.Host}` });
   } catch (err: any) {
+    console.error(`[sonos/cast] failed: ${err.message}`);
     Sentry.captureException(err); res.status(500).json({ error: err.message });
   }
 });
@@ -1177,6 +1184,7 @@ app.post('/api/sonos/queue', sessionMiddleware, async (req, res) => {
     await av.Play({ InstanceID: 0, Speed: '1' });
     res.json({ ok: true, firstTrack, start });
   } catch (err: any) {
+    console.error(`[sonos/queue] failed: ${err.message}`);
     Sentry.captureException(err); res.status(500).json({ error: err.message });
   }
 });

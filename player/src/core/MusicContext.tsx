@@ -477,12 +477,16 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
 
         // Keep Playing: Sonos stopped because the queue ran out — fetch a
         // recommendation, append it (Sonos auto-starts via /enqueue), continue
+        // Gate on OUR stream content: the speaker's previous source (TuneIn/
+        // Spotify) also reports STOPPED — appending recommendations on top of
+        // a failed cast caused the 'one random song' heartbeat.
+        const ourStreamContent = typeof status.trackURI === 'string' && status.trackURI.includes('/rest/stream');
         if (status.state === 'STOPPED') {
           stoppedStreak += 1;
           if (
             stoppedStreak >= 3 && !castAppendPendingRef.current &&
             !queuePushPendingRef.current && hasCastPlayedRef.current &&
-            settings.autoplay && queue.length > 0
+            ourStreamContent && settings.autoplay && queue.length > 0
           ) {
             const lastSong = queue[queue.length - 1].song;
             castAppendPendingRef.current = true;
