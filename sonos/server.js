@@ -451,7 +451,7 @@ app.post('/prev', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🔊 hifi sonos proxy (@svrooij/sonos) on http://0.0.0.0:${PORT}`);
+  console.log(`🔊 hifi sonos proxy [esc-fix-2026-09-19] on http://0.0.0.0:${PORT}`);
   console.log(`   API key auth: ${API_KEY ? 'enabled' : 'disabled'}`);
   console.log(`   CORS origin: ${ALLOWED_ORIGIN}`);
   console.log(`   Navidrome LAN URL: ${NAVIDROME_LAN_URL || '(not set)'}`);
