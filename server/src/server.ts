@@ -1069,11 +1069,11 @@ app.post('/api/sonos/cast', sessionMiddleware, async (req, res) => {
   const { ip, streamUrl, title, artist } = req.body;
   if (!ip) return res.status(400).json({ error: 'Missing or invalid ip' });
   if (!streamUrl) return res.status(400).json({ error: 'Missing streamUrl' });
+  const url = sonosRewriteStreamUrl(streamUrl);
   try {
     const device = await getSonosDevice(ip);
     const coordinator = sonosCoordinator(device);
     const av = coordinator.AVTransportService;
-    const url = sonosRewriteStreamUrl(streamUrl);
     await av.SetAVTransportURI({
       InstanceID: 0,
       // encodeURI() in the library leaves '&' raw → invalid XML
@@ -1083,7 +1083,7 @@ app.post('/api/sonos/cast', sessionMiddleware, async (req, res) => {
     await av.Play({ InstanceID: 0, Speed: '1' });
     res.json({ ok: true, message: `Casting to ${coordinator.Host}` });
   } catch (err: any) {
-    console.error(`[sonos/cast] failed: ${err.message}`);
+    console.error(`[sonos/cast] failed: ${err.message} — streamUrl: ${url}`);
     Sentry.captureException(err); res.status(500).json({ error: err.message });
   }
 });
@@ -1154,6 +1154,7 @@ app.post('/api/sonos/queue', sessionMiddleware, async (req, res) => {
     return res.status(400).json({ error: 'Missing or invalid tracks (max 500)' });
   }
   const start = Math.max(0, Math.min(startIndex ?? 0, tracks.length - 1));
+  const debugUrl = tracks.length > 0 ? sonosRewriteStreamUrl(tracks[0].streamUrl) : '(none)';
   try {
     const device = await getSonosDevice(ip);
     const coordinator = sonosCoordinator(device);
@@ -1184,7 +1185,7 @@ app.post('/api/sonos/queue', sessionMiddleware, async (req, res) => {
     await av.Play({ InstanceID: 0, Speed: '1' });
     res.json({ ok: true, firstTrack, start });
   } catch (err: any) {
-    console.error(`[sonos/queue] failed: ${err.message}`);
+    console.error(`[sonos/queue] failed: ${err.message} — first track URL: ${debugUrl}`);
     Sentry.captureException(err); res.status(500).json({ error: err.message });
   }
 });

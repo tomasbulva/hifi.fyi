@@ -299,11 +299,11 @@ app.post('/cast', async (req, res) => {
   const { ip, streamUrl, title, artist } = req.body;
   if (!ip) return res.status(400).json({ error: 'Missing or invalid ip' });
   if (!streamUrl || !validateStreamUrl(streamUrl)) return res.status(400).json({ error: 'Missing or invalid streamUrl' });
+  const url = rewriteStreamUrl(streamUrl);
   try {
     const device = await getDevice(ip);
     const coordinator = coordinatorOf(device);
     const av = coordinator.AVTransportService;
-    const url = rewriteStreamUrl(streamUrl);
     await av.SetAVTransportURI({
       InstanceID: 0,
       // encodeURI() in the library leaves '&' raw → invalid XML
@@ -313,7 +313,9 @@ app.post('/cast', async (req, res) => {
     await av.Play({ InstanceID: 0, Speed: '1' });
     res.json({ ok: true, message: `Casting to ${coordinator.Host}` });
   } catch (err) {
-    console.error(`[cast] failed: ${err.message}`);
+    // Log the exact URI the speaker rejected — needed to diagnose 714
+    // (Illegal MIME-Type) / 804. Contains credentials; redact before sharing.
+    console.error(`[cast] failed: ${err.message} — streamUrl: ${url}`);
     res.status(500).json({ error: err.message });
   }
 });
@@ -404,7 +406,10 @@ app.post('/queue', async (req, res) => {
     await av.Play({ InstanceID: 0, Speed: '1' });
     res.json({ ok: true, firstTrack, start });
   } catch (err) {
-    console.error(`[queue] failed: ${err.message}`);
+    // Log the first rewritten URI — diagnosing 714/804 needs the exact URL
+    // the speaker rejected. Contains credentials; redact before sharing.
+    const debugUrl = tracks.length > 0 ? rewriteStreamUrl(tracks[0].streamUrl) : '(none)';
+    console.error(`[queue] failed: ${err.message} — first track URL: ${debugUrl}`);
     res.status(500).json({ error: err.message });
   }
 });
