@@ -40,57 +40,59 @@ export function CompanionProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    console.log('[companion] init effect firing');
     checkAndInit().then(ok => {
-      console.log('[companion] initial health check:', ok);
       if (ok) {
         setEnabled(true);
         getHotTrackIds().then(ids => setHotTrackIds(ids));
-        getCompanionStatus().then(status => {
-          console.log('[companion] initial status:', JSON.stringify(status));
-          setScanStatus(status);
-        });
+        getCompanionStatus().then(status => setScanStatus(status));
       } else {
         setEnabled(false);
       }
     });
   }, [checkAndInit]);
 
-  // Retry health check every 5s when not enabled — covers the case where
-  // CompanionProvider mounts before the server is ready (e.g. before login)
+  // Retry health check when not enabled — covers CompanionProvider mounting
+  // before the server is ready. Backs off 5s→60s instead of a fixed 5s timer
+  // that ran forever (with console spam every tick) on companion-less setups.
   useEffect(() => {
     if (enabled) return;
-    console.log('[companion] retry loop active (enabled=false), checking every 5s');
-    const retryTimer = setInterval(() => {
-      console.log('[companion] retrying health check...');
-      checkAndInit().then(ok => {
-        console.log('[companion] retry health result:', ok);
-        if (ok) {
-          setEnabled(true);
-          getHotTrackIds().then(ids => setHotTrackIds(ids));
-          getCompanionStatus().then(status => setScanStatus(status));
-        }
-      });
-    }, 5000);
-    return () => clearInterval(retryTimer);
+    let attempt = 0;
+    let timerId: ReturnType<typeof setTimeout> | undefined;
+    const tryOnce = async () => {
+      attempt++;
+      const ok = await checkAndInit();
+      if (ok) {
+        setEnabled(true);
+        getHotTrackIds().then(ids => setHotTrackIds(ids));
+        getCompanionStatus().then(status => setScanStatus(status));
+        return;
+      }
+      const delay = Math.min(5000 * attempt, 60000);
+      timerId = setTimeout(tryOnce, delay);
+    };
+    tryOnce();
+    return () => { if (timerId) clearTimeout(timerId); };
   }, [enabled, checkAndInit]);
 
-  // Poll scan status while companion is enabled (separate from init to avoid race)
+  // Poll scan status while companion is enabled. Fast (3s) only while a scan
+  // is actually running; 30s otherwise — it used to poll every 3s around the
+  // clock and setScanStatus churned the tree every tick.
   useEffect(() => {
     if (!enabled) return;
-    console.log('[companion] polling started, fetching status immediately');
-    // Fetch immediately
-    getCompanionStatus().then(status => {
-      console.log('[companion] immediate status:', JSON.stringify(status));
-      if (status) setScanStatus(status);
-    }).catch(e => console.log('[companion] immediate status error:', e));
+    const scanning = !!scanStatus?.scanning;
     const pollInterval = setInterval(() => {
       getCompanionStatus().then(status => {
-        if (status) setScanStatus(status);
+        if (!status) return;
+        setScanStatus(prev => {
+          if (prev && prev.scanning === status.scanning &&
+              prev.progress === status.progress &&
+              prev.total_songs === status.total_songs) return prev; // no churn
+          return status;
+        });
       }).catch(() => {});
-    }, 3000);
-    return () => { console.log('[companion] polling stopped'); clearInterval(pollInterval); };
-  }, [enabled]);
+    }, scanning ? 3000 : 30000);
+    return () => clearInterval(pollInterval);
+  }, [enabled, scanStatus?.scanning]);
 
   const refreshHotTracks = useCallback(async () => {
     if (!enabled) return;

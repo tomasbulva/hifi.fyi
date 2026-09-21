@@ -29,10 +29,16 @@ export function CastProvider({ children }: { children: React.ReactNode }) {
 
   // Register Google Cast provider (works directly, no proxy)
   useEffect(() => {
-    // Google Cast SDK loads async — check periodically
+    // Google Cast SDK loads async — check for up to a minute, then stop.
+    // (A blocked CDN — e.g. sandboxed browsers — used to leave this 1s timer
+    // running for the entire tab lifetime.)
+    let castChecks = 0;
     const checkInterval = setInterval(() => {
+      castChecks++;
       if (isGoogleCastAvailable()) {
         setHasGoogleCast(true);
+        clearInterval(checkInterval);
+      } else if (castChecks >= 60) {
         clearInterval(checkInterval);
       }
     }, 1000);
@@ -42,29 +48,39 @@ export function CastProvider({ children }: { children: React.ReactNode }) {
     let backoffMs = 5000;
     const MAX_BACKOFF = 60000;
     let timerId: ReturnType<typeof setTimeout> | undefined;
+    let lastTargetsJson = '';
 
     const discoverSonos = async () => {
-      const proxyUrl = getProxyUrl();
-      try {
-        const res = await fetch(`${proxyUrl}/discover`, {
-          signal: AbortSignal.timeout(10000),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          const targets = (data.speakers ?? []).map((s: any) => ({
-            id: s.id || s.coordinatorIp,
-            name: s.name,
-            type: 'sonos' as const,
-            ip: s.coordinatorIp,
-            members: s.members,
-          }));
-          setSonosTargets(targets);
-          backoffMs = 30000; // Reset to normal 30s poll on success
-        } else {
+      // Skip network churn while the tab is hidden — this used to poll every
+      // 30s around the clock, and each success re-rendered the whole app.
+      if (!document.hidden) {
+        try {
+          const res = await fetch(`${getProxyUrl()}/discover`, {
+            signal: AbortSignal.timeout(10000),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            const targets = (data.speakers ?? []).map((s: any) => ({
+              id: s.id || s.coordinatorIp,
+              name: s.name,
+              type: 'sonos' as const,
+              ip: s.coordinatorIp,
+              members: s.members,
+            }));
+            // Only update state when the list actually changed — a new array
+            // identity every 30s re-rendered the app tree around the clock.
+            const json = JSON.stringify(targets);
+            if (json !== lastTargetsJson) {
+              lastTargetsJson = json;
+              setSonosTargets(targets);
+            }
+            backoffMs = 30000; // Reset to normal 30s poll on success
+          } else {
+            backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF);
+          }
+        } catch {
           backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF);
         }
-      } catch {
-        backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF);
       }
       timerId = setTimeout(discoverSonos, backoffMs);
     };
