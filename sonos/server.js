@@ -36,6 +36,14 @@ const ALLOWED_ORIGIN = process.env.CORS_ORIGIN || '*';
 const NAVIDROME_LAN_URL = process.env.NAVIDROME_LAN_URL || '';
 const DISCOVERY_HOST = process.env.SONOS_DISCOVERY_HOST || '';
 
+// Transcoding for cast receivers: S1-era Sonos hardware (Play:1 etc.) cannot
+// play FLAC — Sonos probes the stream URL and rejects with UPnPError 714
+// (Illegal MIME-Type). Request mp3 from Navidrome's on-the-fly transcoder for
+// ALL cast URLs (metadata already declares audio/mpeg). Set
+// SONOS_TRANSCODE_FORMAT='' to stream original formats instead.
+const TRANSCODE_FORMAT = process.env.SONOS_TRANSCODE_FORMAT ?? 'mp3';
+const TRANSCODE_BITRATE = process.env.SONOS_TRANSCODE_BITRATE ?? '320';
+
 const VALID_PLAY_MODES = ['NORMAL', 'REPEAT_ALL', 'REPEAT_ONE', 'SHUFFLE', 'SHUFFLE_NOREPEAT'];
 
 // ── SonosManager lifecycle ──
@@ -125,6 +133,12 @@ function rewriteStreamUrl(streamUrl) {
     const lanParsed = new URL(NAVIDROME_LAN_URL);
     parsed.protocol = lanParsed.protocol;
     parsed.host = lanParsed.host;
+    // Force Navidrome's on-the-fly transcoder so every speaker model gets a
+    // format it can decode (see TRANSCODE_FORMAT note above).
+    if (TRANSCODE_FORMAT) {
+      parsed.searchParams.set('format', TRANSCODE_FORMAT);
+      parsed.searchParams.set('maxBitRate', TRANSCODE_BITRATE);
+    }
     return parsed.toString();
   } catch { return streamUrl; }
 }
@@ -299,11 +313,11 @@ app.post('/cast', async (req, res) => {
   const { ip, streamUrl, title, artist } = req.body;
   if (!ip) return res.status(400).json({ error: 'Missing or invalid ip' });
   if (!streamUrl || !validateStreamUrl(streamUrl)) return res.status(400).json({ error: 'Missing or invalid streamUrl' });
+  const url = rewriteStreamUrl(streamUrl);
   try {
     const device = await getDevice(ip);
     const coordinator = coordinatorOf(device);
     const av = coordinator.AVTransportService;
-    const url = rewriteStreamUrl(streamUrl);
     await av.SetAVTransportURI({
       InstanceID: 0,
       // encodeURI() in the library leaves '&' raw → invalid XML
@@ -313,7 +327,9 @@ app.post('/cast', async (req, res) => {
     await av.Play({ InstanceID: 0, Speed: '1' });
     res.json({ ok: true, message: `Casting to ${coordinator.Host}` });
   } catch (err) {
-    console.error(`[cast] failed: ${err.message}`);
+    // Log the exact URI the speaker rejected — needed to diagnose 714
+    // (Illegal MIME-Type) / 804. Contains credentials; redact before sharing.
+    console.error(`[cast] failed: ${err.message} — streamUrl: ${url}`);
     res.status(500).json({ error: err.message });
   }
 });
@@ -404,7 +420,10 @@ app.post('/queue', async (req, res) => {
     await av.Play({ InstanceID: 0, Speed: '1' });
     res.json({ ok: true, firstTrack, start });
   } catch (err) {
-    console.error(`[queue] failed: ${err.message}`);
+    // Log the first rewritten URI — diagnosing 714/804 needs the exact URL
+    // the speaker rejected. Contains credentials; redact before sharing.
+    const debugUrl = tracks.length > 0 ? rewriteStreamUrl(tracks[0].streamUrl) : '(none)';
+    console.error(`[queue] failed: ${err.message} — first track URL: ${debugUrl}`);
     res.status(500).json({ error: err.message });
   }
 });
