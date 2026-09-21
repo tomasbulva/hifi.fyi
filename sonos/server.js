@@ -256,7 +256,7 @@ function authMiddleware(req, res, next) {
   next();
 }
 
-for (const route of ['/cast', '/pause', '/resume', '/stop', '/seek', '/volume', '/queue', '/enqueue', '/next', '/prev']) {
+for (const route of ['/cast', '/pause', '/resume', '/stop', '/seek', '/volume', '/queue', '/enqueue', '/next', '/prev', '/debug-cast']) {
   app.use(route, authMiddleware);
 }
 
@@ -467,6 +467,58 @@ app.post('/prev', async (req, res) => {
     await coordinatorOf(device).AVTransportService.Previous({ InstanceID: 0 });
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── TEMPORARY diagnostic: call-shape variants ──
+// Tries several SetAVTransportURI / AddURIToQueue payload shapes in one call
+// and reports which ones Sonos accepts. Remove after debugging.
+app.post('/debug-cast', async (req, res) => {
+  const { ip, streamUrl, title, artist } = req.body;
+  if (!ip || !streamUrl) return res.status(400).json({ error: 'Missing ip or streamUrl' });
+  const url = rewriteStreamUrl(streamUrl);
+  try {
+    const device = await getDevice(ip);
+    const av = coordinatorOf(device).AVTransportService;
+    const track = buildTrack(url, title, artist);
+    const fullDidl = `<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"><item id="1" parentID="0" restricted="true"><res protocolInfo="http-get:*:audio/mpeg:*">${xmlEscape(url)}</res><dc:title>${xmlEscape(title || 'Unknown')}</dc:title><dc:creator>${xmlEscape(artist || '')}</dc:creator><upnp:class>object.item.audioItem.musicTrack</upnp:class></item></DIDL-Lite>`;
+
+    const results = [];
+    const setVariants = [
+      ['A: Track object metadata (current path)', { InstanceID: 0, CurrentURI: xmlEscape(url), CurrentURIMetaData: track }],
+      ['B: empty metadata', { InstanceID: 0, CurrentURI: xmlEscape(url), CurrentURIMetaData: '' }],
+      ['C: full DIDL with res/protocolInfo (old proxy style)', { InstanceID: 0, CurrentURI: xmlEscape(url), CurrentURIMetaData: xmlEscape(fullDidl) }],
+      ['D: x-rincon-mp3radio scheme (Sonos radio format) + empty metadata', { InstanceID: 0, CurrentURI: 'x-rincon-mp3radio://' + xmlEscape(url), CurrentURIMetaData: '' }],
+    ];
+    for (const [name, input] of setVariants) {
+      try {
+        await av.Stop({ InstanceID: 0 });
+        await av.SetAVTransportURI(input);
+        await av.Play({ InstanceID: 0, Speed: '1' });
+        await new Promise(r => setTimeout(r, 2000));
+        const info = await av.GetTransportInfo({ InstanceID: 0 });
+        results.push({ variant: name, ok: true, state: info.CurrentTransportState });
+      } catch (err) {
+        results.push({ variant: name, ok: false, error: err.message });
+      }
+    }
+    const queueVariants = [
+      ['Q-A: AddURIToQueue Track object', { InstanceID: 0, EnqueuedURI: xmlEscape(url), EnqueuedURIMetaData: track, DesiredFirstTrackNumberEnqueued: 0, EnqueueAsNext: false }],
+      ['Q-B: AddURIToQueue empty metadata', { InstanceID: 0, EnqueuedURI: xmlEscape(url), EnqueuedURIMetaData: '', DesiredFirstTrackNumberEnqueued: 0, EnqueueAsNext: false }],
+    ];
+    for (const [name, input] of queueVariants) {
+      try {
+        const resp = await av.AddURIToQueue(input);
+        results.push({ variant: name, ok: true, firstTrack: resp.FirstTrackNumberEnqueued });
+      } catch (err) {
+        results.push({ variant: name, ok: false, error: err.message });
+      }
+    }
+    try { await av.RemoveAllTracksFromQueue({ InstanceID: 0 }); } catch { /* ignore */ }
+    try { await av.Stop({ InstanceID: 0 }); } catch { /* ignore */ }
+    res.json({ url, results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.listen(PORT, () => {
