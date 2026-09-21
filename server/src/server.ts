@@ -979,6 +979,15 @@ function sonosBuildTrack(streamUrl: string, title?: string, artist?: string) {
   };
 }
 
+// Full DIDL with <res protocolInfo> — Sonos REJECTS SetAVTransportURI and
+// AddURIToQueue whose metadata lacks a res element (714 Illegal MIME-Type
+// even for a valid mp3 URL — debug variants A/B fail, C succeeds on every
+// speaker). The library's Track-object path omits res, so we build the
+// full DIDL ourselves (old hand-rolled style) and pass it XML-escaped.
+function sonosBuildStreamDidl(streamUrl: string, title?: string, artist?: string): string {
+  return `<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"><item id="1" parentID="0" restricted="true"><res protocolInfo="http-get:*:audio/mpeg:*">${sonosXmlEscape(streamUrl)}</res><dc:title>${sonosXmlEscape(title || 'Unknown')}</dc:title><dc:creator>${sonosXmlEscape(artist || '')}</dc:creator><upnp:class>object.item.audioItem.musicTrack</upnp:class></item></DIDL-Lite>`;
+}
+
 // Add tracks to the Sonos queue; returns the 1-based number of the first
 // track enqueued. Fast path: AddMultipleURIsToQueue in one call; fallback:
 // sequential AddURIToQueue with typed Track metadata (library-encoded).
@@ -990,7 +999,7 @@ async function sonosEnqueueTracks(av: SonosDevice['AVTransportService'], tracks:
   const esc = (s: string | undefined) => (s === undefined || s === null ? s : sonosXmlEscape(s));
   try {
     // Raw-string fast path: Sonos expects CSVs of URIs and DIDL XML.
-    const didls = tracks.map((t, i) => MetaDataHelper.TrackToMetaData(sonosBuildTrack(sonosXmlEscape(urls[i]), esc(t.title), esc(t.artist)), true) || '');
+    const didls = tracks.map((t, i) => sonosBuildStreamDidl(urls[i], t.title, t.artist));
     const resp = await av.AddMultipleURIsToQueue({
       InstanceID: 0,
       UpdateID: 0,
@@ -1011,8 +1020,10 @@ async function sonosEnqueueTracks(av: SonosDevice['AVTransportService'], tracks:
         InstanceID: 0,
         // Library EncodeTrackUri() only encodeURI()s http URLs — it does NOT
         // XML-escape, so raw '&' in query params produces invalid SOAP XML.
+        // Metadata must carry the full DIDL with res/protocolInfo (see
+        // sonosBuildStreamDidl) — Sonos rejects res-less metadata (714/804).
         EnqueuedURI: sonosXmlEscape(urls[i]),
-        EnqueuedURIMetaData: sonosBuildTrack(urls[i], tracks[i].title, tracks[i].artist),
+        EnqueuedURIMetaData: sonosXmlEscape(sonosBuildStreamDidl(urls[i], tracks[i].title, tracks[i].artist)),
         DesiredFirstTrackNumberEnqueued: 0,
         EnqueueAsNext: false,
       });
@@ -1091,7 +1102,7 @@ app.post('/api/sonos/cast', sessionMiddleware, async (req, res) => {
       InstanceID: 0,
       // encodeURI() in the library leaves '&' raw → invalid XML
       CurrentURI: sonosXmlEscape(url),
-      CurrentURIMetaData: sonosBuildTrack(url, title, artist),
+      CurrentURIMetaData: sonosXmlEscape(sonosBuildStreamDidl(url, title, artist)),
     });
     await av.Play({ InstanceID: 0, Speed: '1' });
     res.json({ ok: true, message: `Casting to ${coordinator.Host}` });
@@ -1173,8 +1184,12 @@ app.post('/api/sonos/queue', sessionMiddleware, async (req, res) => {
     const coordinator = sonosCoordinator(device);
     const av = coordinator.AVTransportService;
 
-    await av.Stop({ InstanceID: 0 });
-    await av.RemoveAllTracksFromQueue({ InstanceID: 0 });
+    // The Arc Ultra's transport can be TV-owned (Stop → 701). Don't let that
+    // abort the queue push — SetAVTransportURI below takes over the source.
+    try { await av.Stop({ InstanceID: 0 }); }
+    catch (err: any) { console.warn(`[sonos/queue] Stop failed (continuing): ${err.message}`); }
+    try { await av.RemoveAllTracksFromQueue({ InstanceID: 0 }); }
+    catch (err: any) { console.warn(`[sonos/queue] RemoveAllTracks failed (continuing): ${err.message}`); }
     const firstTrack = await sonosEnqueueTracks(av, tracks);
     // Switch the source to the queue we just pushed, otherwise Play resumes
     // the last-used source (e.g. TuneIn). On failure: 500 → client degrades
@@ -1319,6 +1334,7 @@ app.post('/api/sonos/debug-cast', sessionMiddleware, async (req, res) => {
     const queueVariants: [string, any][] = [
       ['Q-A: AddURIToQueue Track object', { InstanceID: 0, EnqueuedURI: sonosXmlEscape(url), EnqueuedURIMetaData: track, DesiredFirstTrackNumberEnqueued: 0, EnqueueAsNext: false }],
       ['Q-B: AddURIToQueue empty metadata', { InstanceID: 0, EnqueuedURI: sonosXmlEscape(url), EnqueuedURIMetaData: '', DesiredFirstTrackNumberEnqueued: 0, EnqueueAsNext: false }],
+      ['Q-C: AddURIToQueue full DIDL with res (new fix)', { InstanceID: 0, EnqueuedURI: sonosXmlEscape(url), EnqueuedURIMetaData: sonosXmlEscape(sonosBuildStreamDidl(url, title, artist)), DesiredFirstTrackNumberEnqueued: 0, EnqueueAsNext: false }],
     ];
     for (const [name, input] of queueVariants) {
       const steps: Record<string, string> = {};
