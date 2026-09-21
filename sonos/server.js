@@ -36,6 +36,14 @@ const ALLOWED_ORIGIN = process.env.CORS_ORIGIN || '*';
 const NAVIDROME_LAN_URL = process.env.NAVIDROME_LAN_URL || '';
 const DISCOVERY_HOST = process.env.SONOS_DISCOVERY_HOST || '';
 
+// Transcoding for cast receivers: S1-era Sonos hardware (Play:1 etc.) cannot
+// play FLAC — Sonos probes the stream URL and rejects with UPnPError 714
+// (Illegal MIME-Type). Request mp3 from Navidrome's on-the-fly transcoder for
+// ALL cast URLs (metadata already declares audio/mpeg). Set
+// SONOS_TRANSCODE_FORMAT='' to stream original formats instead.
+const TRANSCODE_FORMAT = process.env.SONOS_TRANSCODE_FORMAT ?? 'mp3';
+const TRANSCODE_BITRATE = process.env.SONOS_TRANSCODE_BITRATE ?? '320';
+
 const VALID_PLAY_MODES = ['NORMAL', 'REPEAT_ALL', 'REPEAT_ONE', 'SHUFFLE', 'SHUFFLE_NOREPEAT'];
 
 // ── SonosManager lifecycle ──
@@ -125,6 +133,12 @@ function rewriteStreamUrl(streamUrl) {
     const lanParsed = new URL(NAVIDROME_LAN_URL);
     parsed.protocol = lanParsed.protocol;
     parsed.host = lanParsed.host;
+    // Force Navidrome's on-the-fly transcoder so every speaker model gets a
+    // format it can decode (see TRANSCODE_FORMAT note above).
+    if (TRANSCODE_FORMAT) {
+      parsed.searchParams.set('format', TRANSCODE_FORMAT);
+      parsed.searchParams.set('maxBitRate', TRANSCODE_BITRATE);
+    }
     return parsed.toString();
   } catch { return streamUrl; }
 }
