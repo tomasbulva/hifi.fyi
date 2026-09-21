@@ -1288,6 +1288,7 @@ app.post('/api/sonos/debug-cast', sessionMiddleware, async (req, res) => {
     const fullDidl = `<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"><item id="1" parentID="0" restricted="true"><res protocolInfo="http-get:*:audio/mpeg:*">${sonosXmlEscape(url)}</res><dc:title>${sonosXmlEscape(title || 'Unknown')}</dc:title><dc:creator>${sonosXmlEscape(artist || '')}</dc:creator><upnp:class>object.item.audioItem.musicTrack</upnp:class></item></DIDL-Lite>`;
 
     const results: { variant: string; ok: boolean; steps?: Record<string, string>; state?: string; firstTrack?: number; error?: string }[] = [];
+    const silent = !!req.body.silent; // silent: never calls Play — mute diagnostics
     const setVariants: [string, any][] = [
       ['A: Track object metadata (current path)', { InstanceID: 0, CurrentURI: sonosXmlEscape(url), CurrentURIMetaData: track }],
       ['B: empty metadata', { InstanceID: 0, CurrentURI: sonosXmlEscape(url), CurrentURIMetaData: '' }],
@@ -1301,9 +1302,14 @@ app.post('/api/sonos/debug-cast', sessionMiddleware, async (req, res) => {
         catch (err: any) { steps.stop = 'failed: ' + err.message; }
         await av.SetAVTransportURI(input);
         steps.setUri = 'ok';
-        try { await av.Play({ InstanceID: 0, Speed: '1' }); steps.play = 'ok'; }
-        catch (err: any) { steps.play = 'failed: ' + err.message; }
-        await new Promise(r => setTimeout(r, 2000));
+        if (silent) {
+          steps.play = 'skipped (silent mode)';
+          await new Promise(r => setTimeout(r, 500));
+        } else {
+          try { await av.Play({ InstanceID: 0, Speed: '1' }); steps.play = 'ok'; }
+          catch (err: any) { steps.play = 'failed: ' + err.message; }
+          await new Promise(r => setTimeout(r, 2000));
+        }
         const info = await av.GetTransportInfo({ InstanceID: 0 });
         results.push({ variant: name, ok: true, steps, state: info.CurrentTransportState });
       } catch (err: any) {
