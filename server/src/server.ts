@@ -979,6 +979,15 @@ function sonosBuildTrack(streamUrl: string, title?: string, artist?: string) {
   };
 }
 
+// Full DIDL with <res protocolInfo> — Sonos REJECTS SetAVTransportURI and
+// AddURIToQueue whose metadata lacks a res element (714 Illegal MIME-Type
+// even for a valid mp3 URL — debug variants A/B fail, C succeeds on every
+// speaker). The library's Track-object path omits res, so we build the
+// full DIDL ourselves (old hand-rolled style) and pass it XML-escaped.
+function sonosBuildStreamDidl(streamUrl: string, title?: string, artist?: string): string {
+  return `<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"><item id="1" parentID="0" restricted="true"><res protocolInfo="http-get:*:audio/mpeg:*">${sonosXmlEscape(streamUrl)}</res><dc:title>${sonosXmlEscape(title || 'Unknown')}</dc:title><dc:creator>${sonosXmlEscape(artist || '')}</dc:creator><upnp:class>object.item.audioItem.musicTrack</upnp:class></item></DIDL-Lite>`;
+}
+
 // Add tracks to the Sonos queue; returns the 1-based number of the first
 // track enqueued. Fast path: AddMultipleURIsToQueue in one call; fallback:
 // sequential AddURIToQueue with typed Track metadata (library-encoded).
@@ -990,7 +999,7 @@ async function sonosEnqueueTracks(av: SonosDevice['AVTransportService'], tracks:
   const esc = (s: string | undefined) => (s === undefined || s === null ? s : sonosXmlEscape(s));
   try {
     // Raw-string fast path: Sonos expects CSVs of URIs and DIDL XML.
-    const didls = tracks.map((t, i) => MetaDataHelper.TrackToMetaData(sonosBuildTrack(sonosXmlEscape(urls[i]), esc(t.title), esc(t.artist)), true) || '');
+    const didls = tracks.map((t, i) => sonosBuildStreamDidl(urls[i], t.title, t.artist));
     const resp = await av.AddMultipleURIsToQueue({
       InstanceID: 0,
       UpdateID: 0,
@@ -1011,8 +1020,10 @@ async function sonosEnqueueTracks(av: SonosDevice['AVTransportService'], tracks:
         InstanceID: 0,
         // Library EncodeTrackUri() only encodeURI()s http URLs — it does NOT
         // XML-escape, so raw '&' in query params produces invalid SOAP XML.
+        // Metadata must carry the full DIDL with res/protocolInfo (see
+        // sonosBuildStreamDidl) — Sonos rejects res-less metadata (714/804).
         EnqueuedURI: sonosXmlEscape(urls[i]),
-        EnqueuedURIMetaData: sonosBuildTrack(urls[i], tracks[i].title, tracks[i].artist),
+        EnqueuedURIMetaData: sonosXmlEscape(sonosBuildStreamDidl(urls[i], tracks[i].title, tracks[i].artist)),
         DesiredFirstTrackNumberEnqueued: 0,
         EnqueueAsNext: false,
       });
@@ -1091,7 +1102,7 @@ app.post('/api/sonos/cast', sessionMiddleware, async (req, res) => {
       InstanceID: 0,
       // encodeURI() in the library leaves '&' raw → invalid XML
       CurrentURI: sonosXmlEscape(url),
-      CurrentURIMetaData: sonosBuildTrack(url, title, artist),
+      CurrentURIMetaData: sonosXmlEscape(sonosBuildStreamDidl(url, title, artist)),
     });
     await av.Play({ InstanceID: 0, Speed: '1' });
     res.json({ ok: true, message: `Casting to ${coordinator.Host}` });
@@ -1173,8 +1184,12 @@ app.post('/api/sonos/queue', sessionMiddleware, async (req, res) => {
     const coordinator = sonosCoordinator(device);
     const av = coordinator.AVTransportService;
 
-    await av.Stop({ InstanceID: 0 });
-    await av.RemoveAllTracksFromQueue({ InstanceID: 0 });
+    // The Arc Ultra's transport can be TV-owned (Stop → 701). Don't let that
+    // abort the queue push — SetAVTransportURI below takes over the source.
+    try { await av.Stop({ InstanceID: 0 }); }
+    catch (err: any) { console.warn(`[sonos/queue] Stop failed (continuing): ${err.message}`); }
+    try { await av.RemoveAllTracksFromQueue({ InstanceID: 0 }); }
+    catch (err: any) { console.warn(`[sonos/queue] RemoveAllTracks failed (continuing): ${err.message}`); }
     const firstTrack = await sonosEnqueueTracks(av, tracks);
     // Switch the source to the queue we just pushed, otherwise Play resumes
     // the last-used source (e.g. TuneIn). On failure: 500 → client degrades
@@ -1254,18 +1269,41 @@ app.post('/api/sonos/prev', sessionMiddleware, async (req, res) => {
 
 // ── TEMPORARY diagnostic: call-shape variants ──
 // Tries several SetAVTransportURI / AddURIToQueue payload shapes in one call
-// and reports which ones Sonos accepts. Remove after debugging.
+// and reports which ones Sonos accepts. Stop failures no longer mask the
+// variants; also reports device identity, group structure and current
+// transport state (701 on Stop smells like TV/line-in ownership).
+// Remove after debugging.
 app.post('/api/sonos/debug-cast', sessionMiddleware, async (req, res) => {
   const { ip, streamUrl, title, artist } = req.body;
   if (!ip || !streamUrl) return res.status(400).json({ error: 'Missing ip or streamUrl' });
   const url = sonosRewriteStreamUrl(streamUrl);
   try {
     const device = await getSonosDevice(ip);
-    const av = sonosCoordinator(device).AVTransportService;
+    const coordinator = sonosCoordinator(device);
+    const av = coordinator.AVTransportService;
+    const report: Record<string, unknown> = {
+      url,
+      device: { host: device.Host, uuid: device.Uuid, name: device.Name, groupName: device.GroupName },
+      coordinator: { host: coordinator.Host, uuid: coordinator.Uuid, name: coordinator.Name },
+    };
+    try {
+      report.initialTransport = await av.GetTransportInfo({ InstanceID: 0 });
+    } catch (err: any) { report.initialTransportError = err.message; }
+    try {
+      const groups = await device.GetZoneGroupState();
+      report.groups = groups.map(g => ({
+        name: g.name,
+        coordinatorHost: g.coordinator && g.coordinator.host,
+        coordinatorUuid: g.coordinator && g.coordinator.uuid,
+        members: (g.members || []).map(m => ({ host: m.host, name: m.name, invisible: m.Invisible, tvConfigError: m.TVConfigurationError })),
+      }));
+    } catch (err: any) { report.groupStateError = err.message; }
+
     const track = sonosBuildTrack(url, title, artist);
     const fullDidl = `<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"><item id="1" parentID="0" restricted="true"><res protocolInfo="http-get:*:audio/mpeg:*">${sonosXmlEscape(url)}</res><dc:title>${sonosXmlEscape(title || 'Unknown')}</dc:title><dc:creator>${sonosXmlEscape(artist || '')}</dc:creator><upnp:class>object.item.audioItem.musicTrack</upnp:class></item></DIDL-Lite>`;
 
-    const results: { variant: string; ok: boolean; state?: string; firstTrack?: number; error?: string }[] = [];
+    const results: { variant: string; ok: boolean; steps?: Record<string, string>; state?: string; firstTrack?: number; error?: string }[] = [];
+    const silent = !!req.body.silent; // silent: never calls Play — mute diagnostics
     const setVariants: [string, any][] = [
       ['A: Track object metadata (current path)', { InstanceID: 0, CurrentURI: sonosXmlEscape(url), CurrentURIMetaData: track }],
       ['B: empty metadata', { InstanceID: 0, CurrentURI: sonosXmlEscape(url), CurrentURIMetaData: '' }],
@@ -1273,32 +1311,44 @@ app.post('/api/sonos/debug-cast', sessionMiddleware, async (req, res) => {
       ['D: x-rincon-mp3radio scheme (Sonos radio format) + empty metadata', { InstanceID: 0, CurrentURI: 'x-rincon-mp3radio://' + sonosXmlEscape(url), CurrentURIMetaData: '' }],
     ];
     for (const [name, input] of setVariants) {
+      const steps: Record<string, string> = {};
       try {
-        await av.Stop({ InstanceID: 0 });
+        try { await av.Stop({ InstanceID: 0 }); steps.stop = 'ok'; }
+        catch (err: any) { steps.stop = 'failed: ' + err.message; }
         await av.SetAVTransportURI(input);
-        await av.Play({ InstanceID: 0, Speed: '1' });
-        await new Promise(r => setTimeout(r, 2000));
+        steps.setUri = 'ok';
+        if (silent) {
+          steps.play = 'skipped (silent mode)';
+          await new Promise(r => setTimeout(r, 500));
+        } else {
+          try { await av.Play({ InstanceID: 0, Speed: '1' }); steps.play = 'ok'; }
+          catch (err: any) { steps.play = 'failed: ' + err.message; }
+          await new Promise(r => setTimeout(r, 2000));
+        }
         const info = await av.GetTransportInfo({ InstanceID: 0 });
-        results.push({ variant: name, ok: true, state: info.CurrentTransportState });
+        results.push({ variant: name, ok: true, steps, state: info.CurrentTransportState });
       } catch (err: any) {
-        results.push({ variant: name, ok: false, error: err.message });
+        results.push({ variant: name, ok: false, steps, error: err.message });
       }
     }
     const queueVariants: [string, any][] = [
       ['Q-A: AddURIToQueue Track object', { InstanceID: 0, EnqueuedURI: sonosXmlEscape(url), EnqueuedURIMetaData: track, DesiredFirstTrackNumberEnqueued: 0, EnqueueAsNext: false }],
       ['Q-B: AddURIToQueue empty metadata', { InstanceID: 0, EnqueuedURI: sonosXmlEscape(url), EnqueuedURIMetaData: '', DesiredFirstTrackNumberEnqueued: 0, EnqueueAsNext: false }],
+      ['Q-C: AddURIToQueue full DIDL with res (new fix)', { InstanceID: 0, EnqueuedURI: sonosXmlEscape(url), EnqueuedURIMetaData: sonosXmlEscape(sonosBuildStreamDidl(url, title, artist)), DesiredFirstTrackNumberEnqueued: 0, EnqueueAsNext: false }],
     ];
     for (const [name, input] of queueVariants) {
+      const steps: Record<string, string> = {};
       try {
         const resp = await av.AddURIToQueue(input);
-        results.push({ variant: name, ok: true, firstTrack: resp.FirstTrackNumberEnqueued });
+        steps.add = 'ok';
+        results.push({ variant: name, ok: true, steps, firstTrack: resp.FirstTrackNumberEnqueued });
       } catch (err: any) {
-        results.push({ variant: name, ok: false, error: err.message });
+        results.push({ variant: name, ok: false, steps, error: err.message });
       }
     }
     try { await av.RemoveAllTracksFromQueue({ InstanceID: 0 }); } catch { /* ignore */ }
     try { await av.Stop({ InstanceID: 0 }); } catch { /* ignore */ }
-    res.json({ url, results });
+    res.json({ ...report, results });
   } catch (err: any) {
     Sentry.captureException(err); res.status(500).json({ error: err.message });
   }
