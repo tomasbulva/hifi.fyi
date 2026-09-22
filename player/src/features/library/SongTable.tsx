@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { SubsonicSong } from '../../core/types';
 import { CachedCover } from '../../components/CachedCover';
 import { PlayingBars, CodecPill } from '../../components/shared';
@@ -33,6 +33,18 @@ export function SongTable({
   const [lastClicked, setLastClicked] = useState<string | null>(null);
   const hasSelection = selected.size > 0;
   const showCol = (c: Column) => columns.includes(c);
+
+  // Render window cap — LibraryView passes `allSongs`, which grows unbounded
+  // via infinite scroll (up to ~38k). Rendering every row created ~400k DOM
+  // nodes and OOM'd the renderer. Render first N + "Load more".
+  const RENDER_PAGE = 200;
+  const [visibleCount, setVisibleCount] = useState(RENDER_PAGE);
+  // Reset the window when the list actually changes (first track id) —
+  // appends keep the same first id, so an infinite-scroll load doesn't
+  // collapse the user's loaded rows.
+  const firstSongId = songs[0]?.id;
+  useEffect(() => { setVisibleCount(RENDER_PAGE); }, [firstSongId]);
+  const visibleSongs = songs.slice(0, visibleCount);
 
   if (songs.length === 0) return (
     <p className="mt-10 text-center text-sm" style={{ color: '#CBC3D7' }}>No tracks</p>
@@ -100,7 +112,7 @@ export function SongTable({
       </div>
 
       {/* Rows */}
-      {songs.map((song, idx) => {
+      {visibleSongs.map((song, idx) => {
         const isSelected = selected.has(song.id);
         const isPlaying = currentTrackId === song.id;
 
@@ -200,6 +212,14 @@ export function SongTable({
           </div>
         );
       })}
+
+      {songs.length > visibleSongs.length && (
+        <button className="w-full mt-3 mb-2 py-2 text-xs rounded-lg cursor-pointer hover:opacity-80"
+          style={{ color: '#CBC3D7', border: '1px solid rgba(255,255,255,0.08)', background: 'transparent' }}
+          onClick={() => setVisibleCount(c => c + RENDER_PAGE)}>
+          Load more ({(songs.length - visibleSongs.length).toLocaleString()} remaining)
+        </button>
+      )}
 
       {/* Selection bar — fixed to viewport, sits above MiniPlayer when present */}
       {hasSelection && (

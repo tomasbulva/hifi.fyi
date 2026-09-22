@@ -30,6 +30,7 @@ function PlayerApp() {
   const [scanBanner, setScanBanner] = useState<string | null>(null);
   const wasScanning = useRef(false);
   const hasAnnouncedComplete = useRef(false);
+  const bannerTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useKeyboardShortcuts();
   useMediaSession();
@@ -42,10 +43,8 @@ function PlayerApp() {
   // Global scan status banner — visible on every page, not just Library
   useEffect(() => {
     if (!scanStatus) {
-      console.log('[banner] scanStatus is null/undefined');
       return;
     }
-    console.log('[banner] scanStatus:', JSON.stringify(scanStatus));
     if (scanStatus.scanning) {
       // progress from server is already 0-100 percentage
       const pct = scanStatus.progress;
@@ -58,12 +57,14 @@ function PlayerApp() {
       setScanBanner(`Scan complete: ${scanStatus.total_songs.toLocaleString()} songs indexed`);
       wasScanning.current = false;
       hasAnnouncedComplete.current = true;
-      setTimeout(() => setScanBanner(null), 5000);
+      if (bannerTimer.current) clearTimeout(bannerTimer.current);
+      bannerTimer.current = setTimeout(() => setScanBanner(null), 5000);
     } else if (!wasScanning.current && !hasAnnouncedComplete.current && scanStatus.total_songs > 0) {
       // Scan completed before frontend loaded — show the result briefly
       setScanBanner(`${scanStatus.total_songs.toLocaleString()} songs indexed ✨`);
       hasAnnouncedComplete.current = true;
-      setTimeout(() => setScanBanner(null), 5000);
+      if (bannerTimer.current) clearTimeout(bannerTimer.current);
+      bannerTimer.current = setTimeout(() => setScanBanner(null), 5000);
     }
   }, [scanStatus?.scanning, scanStatus?.progress, scanStatus?.total_songs]);
 

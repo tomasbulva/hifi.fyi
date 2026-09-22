@@ -196,7 +196,9 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     }
     try {
       if (queue.length > 0) {
-        localStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify(queue));
+        // Cap persisted size — JSON.stringify of a runaway queue blocked the
+        // main thread on every queue change (unbounded Keep-Playing appends).
+        localStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify(queue.slice(-500)));
       } else {
         localStorage.removeItem(QUEUE_STORAGE_KEY);
       }
@@ -285,6 +287,13 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
   // Keep-Playing appends only make sense after real playback has started —
   // never when a cast silently failed and the receiver is simply idle.
   const hasCastPlayedRef = useRef(false);
+  // Timestamp of the last PLAYING status — Keep-Playing only fires while the
+  // speaker played recently. Without this gate the poller appended
+  // recommendations hours later in an unattended overnight tab (random
+  // Sonos playback at night).
+  const lastPlayingSeenAtRef = useRef(0);
+  // Consecutive failed Keep-Playing appends — stop retrying after 3.
+  const castAppendFailuresRef = useRef(0);
 
   function isCasting() {
     return castTargetRef.current !== null;
@@ -401,9 +410,15 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
 
   // Sync engine state to React
   useEffect(() => {
+    // Throttle progress to ~1Hz — timeupdate fires ~4Hz and each setPlayback
+    // re-rendered all 14 context consumers (progressive beachball).
+    let lastTickSec = -1;
     const unsubs = [
       engine.on('timeupdate', () => {
         const s = engine.state;
+        const sec = Math.floor(s.progress);
+        if (sec === lastTickSec) return;
+        lastTickSec = sec;
         setPlayback(prev => ({ ...prev, progress: s.progress, duration: s.duration, buffered: s.buffered }));
       }),
       engine.on('play', () => setPlayback(prev => ({ ...prev, isPlaying: true }))),
@@ -452,13 +467,14 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
         if (!status || !active) return;
         const progress = parseTime(status.position);
         const duration = parseTime(status.duration);
-        if (status.isPlaying) hasCastPlayedRef.current = true;
-        setPlayback(prev => ({
-          ...prev,
-          isPlaying: status.isPlaying,
-          progress,
-          duration: duration || prev.duration,
-        }));
+        if (status.isPlaying) { hasCastPlayedRef.current = true; lastPlayingSeenAtRef.current = Date.now(); }
+        setPlayback(prev => {
+          // No-op when nothing changed — the poller fired 4×/s (throttled to
+          // ~1/min in background tabs) and each tick re-rendered the app.
+          if (prev.isPlaying === status.isPlaying && prev.progress === progress &&
+              (prev.duration === duration || !duration)) return prev;
+          return { ...prev, isPlaying: status.isPlaying, progress, duration: duration || prev.duration };
+        });
 
         // Mirror Sonos-side track changes (including Sonos-own advancement,
         // manual skips, and repeat wraps) into the client queue + scrobble
@@ -486,7 +502,13 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
           if (
             stoppedStreak >= 3 && !castAppendPendingRef.current &&
             !queuePushPendingRef.current && hasCastPlayedRef.current &&
-            ourStreamContent && settings.autoplay && queue.length > 0
+            ourStreamContent && settings.autoplay && queue.length > 0 &&
+            castAppendFailuresRef.current < 3 &&
+            // Only append while the queue ran out RECENTLY (< 2 min since the
+            // speaker was last playing). Without this, an unattended tab that
+            // kept its cast target fired recommendations hours later — the
+            // 'random song playing at night' bug.
+            Date.now() - lastPlayingSeenAtRef.current < 120_000
           ) {
             const lastSong = queue[queue.length - 1].song;
             castAppendPendingRef.current = true;
@@ -497,7 +519,8 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
                   streamUrl: getAbsoluteStreamUrl(song.id),
                   title: song.title,
                   artist: song.artist ?? '',
-                }).catch(() => {});
+                }).then(() => { castAppendFailuresRef.current = 0; })
+                  .catch(() => { castAppendFailuresRef.current += 1; });
                 setQueue(prev => [...prev, { song, queuedAt: Date.now() }]);
               }
             }).catch(() => {}).finally(() => {
@@ -520,11 +543,11 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     if (!googleCastActive || !googleCastProvider.onMediaUpdate) return;
     let appending = false;
     const unsub = googleCastProvider.onMediaUpdate(state => {
-      setPlayback(prev => ({
-        ...prev,
-        isPlaying: state.playerState === 'PLAYING' || state.playerState === 'BUFFERING',
-        progress: state.position,
-      }));
+      const isP = state.playerState === 'PLAYING' || state.playerState === 'BUFFERING';
+      setPlayback(prev => {
+        if (prev.isPlaying === isP && prev.progress === state.position) return prev;
+        return { ...prev, isPlaying: isP, progress: state.position };
+      });
 
       // Receiver advanced to another item — sync queue index + scrobble
       const songId = googleCastProvider.songIdForItem?.(state.queueItemId);
@@ -821,6 +844,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     castTargetRef.current = target;
     // New cast session — receiver hasn't played anything yet
     hasCastPlayedRef.current = false;
+    lastPlayingSeenAtRef.current = 0;
     setCastTargetState(target);
     
     if (target) {
@@ -960,14 +984,17 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
     }
   }, [radios.length]);
 
-  // Preload cover art images into cache when library data changes
+  // Preload cover art images into cache when library data changes.
+  // CAPPED: preloading the whole library (38k songs / thousands of artists)
+  // churned the blob cache with thousands of fetches. Components fetch on
+  // demand via getCoverUrl anyway — this is a nicety for the first screens.
   useEffect(() => {
     const urls: string[] = [];
-    for (const a of artists) {
+    for (const a of artists.slice(0, 100)) {
       const url = getCoverArtUrl(a.coverArt || a.artistImageUrl);
       if (url) urls.push(url);
     }
-    imageCache.preload(urls);
+    imageCache.preload(urls.slice(0, 100));
   }, [artists]);
 
   useEffect(() => {
@@ -978,7 +1005,7 @@ export function MusicProvider({ children }: { children: React.ReactNode }) {
         if (url) urls.push(url);
       }
     }
-    imageCache.preload(urls);
+    imageCache.preload(urls.slice(0, 100));
   }, [albumsByType]);
 
   useEffect(() => {

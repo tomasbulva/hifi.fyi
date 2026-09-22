@@ -29,7 +29,9 @@ export default function CastButton({ direction = 'down' }: CastButtonProps) {
 
     setProvider(googleCastProvider);
 
-    googleCastProvider.onStateChange(st => {
+    // Return the unsubscribe — discarding it also clobbered the listener
+    // CastContext.setProvider registered a line earlier (single-slot callback).
+    return googleCastProvider.onStateChange(st => {
       if (st.connected && st.target) {
         setCastTarget(st.target);
         (googleCastProvider as any)._currentTarget = st.target;

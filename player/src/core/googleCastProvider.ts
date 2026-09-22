@@ -148,10 +148,15 @@ function makeMediaInfo(item: CastQueueItem): any {
   return mediaInfo;
 }
 
+let watchedListener: ((isAlive: boolean) => void) | null = null;
 function watchMedia(media: any) {
   if (!media || media === watchedMedia) return;
+  // Remove the previous listener — media update listeners accumulate per
+  // queue load otherwise, piling closures on the cast session in long
+  // sessions.
+  if (watchedMedia && watchedListener) watchedMedia.removeUpdateListener?.(watchedListener);
   watchedMedia = media;
-  media.addUpdateListener?.((isAlive: boolean) => {
+  watchedListener = (isAlive: boolean) => {
     if (!isAlive || !mediaUpdateCallback) return;
     const state: CastMediaState = {
       playerState: media.playerState || 'IDLE',
@@ -159,7 +164,8 @@ function watchMedia(media: any) {
       queueItemId: media.currentItemId,
     };
     mediaUpdateCallback(state);
-  });
+  };
+  media.addUpdateListener?.(watchedListener);
 }
 
 export const googleCastProvider: CastProvider = {

@@ -47,6 +47,7 @@ export function CastProvider({ children }: { children: React.ReactNode }) {
     // Uses exponential backoff: starts at 5s, doubles on failure, caps at 60s
     let backoffMs = 5000;
     const MAX_BACKOFF = 60000;
+    let unmounted = false;
     let timerId: ReturnType<typeof setTimeout> | undefined;
     let lastTargetsJson = '';
 
@@ -82,11 +83,16 @@ export function CastProvider({ children }: { children: React.ReactNode }) {
           backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF);
         }
       }
+      // Don't reschedule after unmount — the previous cleanup only cleared
+      // the pending timer, so a fetch in flight during unmount restarted the
+      // loop forever.
+      if (unmounted) return;
       timerId = setTimeout(discoverSonos, backoffMs);
     };
     discoverSonos();
 
     return () => {
+      unmounted = true;
       clearInterval(checkInterval);
       clearTimeout(timerId);
     };

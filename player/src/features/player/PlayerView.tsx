@@ -1,7 +1,7 @@
 import { useMusic } from '../../core/MusicContext';
 import { useCompanion } from '../../core/CompanionContext';
 import { reportError } from '../../core/errorReport';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import CastButton from '../cast/CastButton';
 import { CachedCover } from '../../components/CachedCover';
 import { PlayingBars } from '../../components/shared';
@@ -285,6 +285,14 @@ export default function PlayerView() {
     );
   }
 
+  // Memoize the (expensive) queue rendering — PlayerView re-renders on every
+  // playback tick; without this the whole queue (rendered twice below) was
+  // rebuilt on every tick even though nothing in it changed.
+  const queueItems = useMemo(
+    () => renderQueueItems(),
+    [queue, currentIdx, isPlaying, repeat, getCoverUrl, playFromQueue, removeFromQueue, pause, resume]
+  );
+
   function renderQueueHeader() {
     return (
       <div className="flex items-center justify-between mb-4">
@@ -430,14 +438,14 @@ export default function PlayerView() {
       {queue.length > 0 && (
         <section id="queue-section" className="hidden lg:block w-[400px] flex-shrink-0 mt-8 lg:mt-0">
           {renderQueueHeader()}
-          {renderQueueItems()}
+          {queueItems}
         </section>
       )}
 
       {/* Mobile queue — always visible, actions below the list */}
       {queue.length > 0 && (
         <section id="queue-section-mobile" className="lg:hidden w-full mt-8">
-          {renderQueueItems()}
+          {queueItems}
           <div className="flex items-center justify-end gap-3 mt-4">
             <SavePlaylistButton />
             <button onClick={clearQueue}
